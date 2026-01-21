@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compressed Universe Viewer</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    
+    <style>
+        body { margin: 0; padding: 0; font-family: sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; background: #f4f4f4; }
+        #main-container { display: flex; flex: 1; height: 60%; min-height: 200px; border-bottom: 5px solid #ccc; resize: vertical; overflow: auto; }
+        #left-panel { flex: 1; border-right: 1px solid #ccc; position: relative; min-width: 300px; }
+        #right-panel { flex: 2; display: flex; flex-direction: column; min-width: 600px; }
+        
+        #sed-container { display: flex; flex: 1; }
+        #sed-observer { flex: 1; border-right: 1px solid #ccc; }
+        #sed-restframe { flex: 1; display: flex; flex-direction: column; }
+        #histogram-panel { height: 120px; border-bottom: 1px solid #ccc; background: #fafafa; }
+        #sed-rest-plot { flex: 1; }
+        
+        #iframe-container { flex: 1; background: white; display: flex; flex-direction: column; min-height: 200px; }
+        .plot-div { width: 100%; height: 100%; }
+        
+        #controls { padding: 8px 15px; background: #333; color: white; border-bottom: 1px solid #000; display: flex; align-items: center; font-size: 14px; }
+        
+        #browser-header { padding: 10px; background: #f8f9fa; border-bottom: 1px solid #ddd; font-size: 14px; font-family: sans-serif; line-height: 1.5; }
+        
+        iframe { width: 100%; height: 100%; border: none; }
+        
+        .info-tag { padding: 3px 6px; border-radius: 3px; color: white; font-weight: bold; font-size: 0.9em; margin-right: 5px; display: inline-block; }
+        .stat-tag { background: #6c757d; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.9em; }
+        
+        #error-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 9999; padding: 40px; color: #d62728; font-family: monospace; white-space: pre-wrap; font-size: 16px; border: 5px solid #d62728;}
+        #loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,1); z-index: 5000; display: flex; justify-content: center; align-items: center; font-size: 1.5em; color: #333; flex-direction: column;}
+    </style>
+</head>
+<body>
+
+    <div id="error-overlay"></div>
+    <div id="loading-overlay">
+        <div>⏳ Loading & Decompressing Data...</div>
+        <div style="font-size:0.6em; color:#666; margin-top:10px">Fetching galaxy_data.js.gz</div>
+    </div>
+
+    <script>
+        function showError(msg) {
+            document.getElementById('loading-overlay').style.display = 'none';
+            const el = document.getElementById('error-overlay');
+            el.style.display = 'block';
+            el.innerHTML = "<h3>⚠️ CRITICAL ERROR</h3>" + msg;
+            console.error(msg);
+        }
+
+        // --- NEW: Decompression Logic ---
+        async function loadData() {
+            try {
+                // 1. Fetch the compressed file
+                const response = await fetch('galaxy_data.js.gz');
+                if (!response.ok) throw new Error(`HTTP Error ${response.status}: ${response.statusText}`);
+
+                // 2. Use native DecompressionStream (GZIP)
+                const ds = new DecompressionStream('gzip');
+                const decompressedStream = response.body.pipeThrough(ds);
+
+                // 3. Convert stream to text
+                const blob = await new Response(decompressedStream).blob();
+                const scriptContent = await blob.text();
+
+                // 4. Inject the script into the page
+                const script = document.createElement('script');
+                script.text = scriptContent;
+                document.body.appendChild(script);
+
+                // 5. Hide loading and start the app
+                document.getElementById('loading-overlay').style.display = 'none';
+                initDashboard();
+
+            } catch (err) {
+                // Fallback suggestion
+                let extra = "";
+                if (window.location.protocol === 'file:') {
+                    extra = "\n\n⚠️ NOTE: You are running this file via 'file://'.\nBrowsers block fetching files locally for security.\nPlease run a local server (e.g., 'python -m http.server') and open localhost.";
+                }
+                showError("Failed to load/decompress galaxy_data.js.gz:\n" + err.message + extra);
+            }
+        }
+
+        // Start loading immediately
+        loadData();
+    </script>
+
+    <div id="controls">
+        <b style="font-size:1.1em; margin-right: 20px;">Compressed Universe Viewer + DJA</b> 
+        <span style="color:#aaa; font-size:0.9em;">
+            🖱️ <b>Click:</b> Single object &nbsp;|&nbsp; 
+            ⭕ <b>Lasso/Box (top-right menu):</b> Stacked SED (Observer + Rest-frame)
+        </span>
+    </div>
+
+    <div id="main-container">
+        <div id="left-panel">
+            <div id="umap-plot" class="plot-div"></div>
+        </div>
+        <div id="right-panel">
+            <div id="sed-container">
+                <div id="sed-observer">
+                    <div id="sed-plot" class="plot-div"></div>
+                </div>
+                <div id="sed-restframe">
+                    <div id="histogram-panel">
+                        <div id="histogram-plot" class="plot-div"></div>
+                    </div>
+                    <div id="sed-rest-plot" class="plot-div"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="iframe-container">
+        <div id="browser-header">Waiting for selection...</div>
+        <iframe id="dja-frame" src="about:blank"></iframe>
+    </div>
+
+<script>
+    // Wraps the original logic to be called after data load
+    function initDashboard() {
+        try {
+            if (typeof window.GALAXY_DATA === 'undefined') throw new Error("Data loaded but GALAXY_DATA object is missing.");
+            const D = window.GALAXY_DATA;
+            
+            // URL CONFIGURATION
+            const SURVEY_CONFIG = {
+                'A2744O':   { field: 'abell2744', url_type: 'jwst', zoom: 9 },
+                'CEERSO':   { field: 'egs-v2',    url_type: 'index', zoom: 9 },
+                'JADESGNO': { field: 'gdn',       url_type: 'jwst', zoom: 9 },
+                'JADESGSO': { field: 'gds',       url_type: 'jwst', zoom: 9 },
+                'PRIMERCO': { field: 'cos',       url_type: 'cweb', zoom: 9 },
+                'PRIMERUO': { field: 'uds',       url_type: 'index', zoom: 9 }
+            };
+
+            function getDjaUrl(ra, dec, survey) {
+                const config = SURVEY_CONFIG[survey] || SURVEY_CONFIG['JADESGSO'];
+                const base = `https://s3.amazonaws.com/grizli-v2/ClusterTiles/Map/${config.field}`;
+                const c = `${ra.toFixed(7)},${dec.toFixed(7)}`;
+                if (config.url_type === 'jwst') return `${base}/jwst.html?coord=${c}&zoom=${config.zoom}`;
+                if (config.url_type === 'index') return `${base}/index.html?zoom=${config.zoom}&coords=${c}`;
+                if (config.url_type === 'cweb') return `${base}/cweb.html?zoom=${config.zoom}&coords=${c}`;
+                return `${base}/jwst.html?coord=${c}&zoom=${config.zoom}`;
+            }
+
+            // ================= UMAP PLOT =================
+            const allIndices = Array.from({length: D.ra.length}, (_, i) => i);
+            const specialIndices = new Set();
+            Object.values(D.catalog_indices).forEach(arr => arr.forEach(idx => specialIndices.add(idx)));
+            const bgIndices = allIndices.filter(i => !specialIndices.has(i));
+
+            const traces = [];
+            // Background points
+            traces.push({
+                x: bgIndices.map(i => D.umap[i][0]),
+                y: bgIndices.map(i => D.umap[i][1]),
+                customdata: bgIndices,
+                mode: 'markers',
+                type: 'scattergl',
+                marker: { size: 3, color: '#dddddd', opacity: 0.5 },
+                hoverinfo: 'none',
+                name: 'Background'
+            });
+
+            // Catalog points
+            for (const [key, indices] of Object.entries(D.catalog_indices)) {
+                if (indices.length === 0) continue;
+                traces.push({
+                    x: indices.map(i => D.umap[i][0]),
+                    y: indices.map(i => D.umap[i][1]),
+                    customdata: indices,
+                    mode: 'markers',
+                    type: 'scattergl',
+                    marker: { size: 6, color: D.catalog_colors[key], line: {color: 'black', width: 0.5} },
+                    name: D.catalog_labels[key],
+                    text: indices.map(i => `ID: ${D.ids[i]}`),
+                    hovertemplate: '<b>%{text}</b><extra></extra>'
+                });
+            }
+            
+            // Single selection marker
+            traces.push({
+                x: [], y: [], mode: 'markers', type: 'scattergl',
+                marker: { size: 12, color: 'rgba(0,0,0,0)', line: {color: 'red', width: 2} },
+                name: 'Selected', hoverinfo: 'none', showlegend: false
+            });
+
+            // Multi-selection highlight (transparent red overlay)
+            traces.push({
+                x: [], y: [], mode: 'markers', type: 'scattergl',
+                marker: { size: 8, color: 'rgba(255,0,0,0.3)', line: {color: 'red', width: 1} },
+                name: 'Multi-Selected', hoverinfo: 'none', showlegend: false
+            });
+
+            const umapLayout = {
+                title: 'UMAP Space', 
+                margin: { t: 30, l: 40, r: 20, b: 30 },
+                hovermode: 'closest', 
+                dragmode: 'pan', 
+                legend: { x: 0.02, y: 0.98, bgcolor: 'rgba(255,255,255,0.8)' }
+            };
+
+            const sedLayout = {
+                title: 'SED Viewer (Observer Frame)', 
+                xaxis: { type: 'log', title: 'Wavelength [μm]', exponentformat: 'none' }, 
+                yaxis: { type: 'log', title: 'Flux [μJy]', exponentformat: 'power' },
+                margin: { t: 40, l: 60, r: 20, b: 40 },
+                showlegend: true,
+                legend: { x: 0.02, y: 0.98 }
+            };
+
+            const sedRestLayout = {
+                title: 'SED Rest-Frame', 
+                xaxis: { type: 'log', title: 'Rest Wavelength [μm]', exponentformat: 'none' }, 
+                yaxis: { type: 'log', title: 'Flux [μJy]', exponentformat: 'power' },
+                margin: { t: 40, l: 60, r: 20, b: 40 },
+                showlegend: true,
+                legend: { x: 0.02, y: 0.98 }
+            };
+
+            const histLayout = {
+                title: { text: 'SED count per bin', font: { size: 11 } },
+                xaxis: { type: 'log', title: '', showticklabels: false },
+                yaxis: { title: 'N', titlefont: { size: 11 } },
+                margin: { t: 25, l: 50, r: 20, b: 20 },
+                showlegend: false,
+                bargap: 0.1
+            };
+
+            Plotly.newPlot('umap-plot', traces, umapLayout, {responsive: true});        
+            Plotly.newPlot('sed-plot', [], sedLayout, {responsive: true});
+            Plotly.newPlot('sed-rest-plot', [], sedRestLayout, {responsive: true});
+            Plotly.newPlot('histogram-plot', [], histLayout, {responsive: true});
+
+            // ================= INTERACTIONS =================
+            const umapDiv = document.getElementById('umap-plot');
+            const singleMarkerIdx = traces.length - 2;  // Second to last trace
+            const multiMarkerIdx = traces.length - 1;   // Last trace
+            
+            umapDiv.on('plotly_click', function(data){
+                if(!data.points || data.points.length === 0) return;
+                const idx = data.points[0].customdata;
+                if (typeof idx === 'undefined') return;
+                updateSingleObject(idx);
+            });
+
+            umapDiv.on('plotly_selected', function(data){
+                if(!data || !data.points || data.points.length === 0) {
+                    Plotly.react('sed-plot', [], sedLayout);
+                    Plotly.react('sed-rest-plot', [], sedRestLayout);
+                    Plotly.react('histogram-plot', [], histLayout);
+                    return;
+                }
+                const indices = [...new Set(data.points.map(pt => pt.customdata).filter(i => i !== undefined))];
+                if (indices.length === 1) updateSingleObject(indices[0]);
+                else if (indices.length > 1) updateStackedSed(indices);
+            });
+
+            // ================= UPDATE LOGIC =================
+
+            function updateSingleObject(idx) {
+                const ra = D.ra[idx], dec = D.dec[idx], survey = D.survey[idx], id = D.ids[idx];
+                const url = getDjaUrl(ra, dec, survey);
+                const z = D.zphot[idx];
+                
+                document.getElementById('browser-header').innerHTML = 
+                    `<span class="info-tag" style="background:#007bff">ID: ${id}</span>` +
+                    `<span class="info-tag" style="background:#28a745">${survey}</span>` +
+                    `<span class="info-tag" style="background:#6c757d">z: ${z.toFixed(3)}</span>` +
+                    ` &nbsp; Coords: ${ra.toFixed(6)}, ${dec.toFixed(6)}` +
+                    ` &nbsp; <a href="${url}" target="_blank" style="color:#007bff; text-decoration:none;">Open ↗</a>`;
+                
+                document.getElementById('dja-frame').src = url;
+                
+                // Clear multi-selection highlight, show single selection marker
+                Plotly.restyle('umap-plot', { x: [[]], y: [[]] }, [multiMarkerIdx]);
+                Plotly.restyle('umap-plot', { x: [[D.umap[idx][0]]], y: [[D.umap[idx][1]]] }, [singleMarkerIdx]);
+
+                // Observer-frame SED
+                const xObs = [], yObs = [];
+                for(let k=0; k<D.wavelengths.length; k++) {
+                    if(D.fluxes[idx][k] > 0) { 
+                        xObs.push(D.wavelengths[k]); 
+                        yObs.push(D.fluxes[idx][k]); 
+                    }
+                }
+
+                sedLayout.title = `Observer Frame: ID ${id}`;
+                Plotly.react('sed-plot', [{
+                    x: xObs, y: yObs, mode: 'lines+markers', name: `ID ${id}`,
+                    marker: {size: 8}, line: {color: '#d62728', width: 2}
+                }], sedLayout);
+
+                // Rest-frame SED
+                const xRest = xObs.map(w => w / (1 + z));
+                sedRestLayout.title = `Rest Frame: ID ${id} (z=${z.toFixed(3)})`;
+                Plotly.react('sed-rest-plot', [{
+                    x: xRest, y: yObs, mode: 'lines+markers', name: `ID ${id}`,
+                    marker: {size: 8}, line: {color: '#2ca02c', width: 2}
+                }], sedRestLayout);
+
+                Plotly.react('histogram-plot', [], histLayout);
+            }
+
+            function updateStackedSed(indices) {
+                const zValues = indices.map(i => D.zphot[i]);
+                zValues.sort((a, b) => a - b);
+                const medZ = zValues[Math.floor(zValues.length / 2)].toFixed(2);
+
+                const counts = {};
+                indices.forEach(i => { counts[D.survey[i]] = (counts[D.survey[i]] || 0) + 1; });
+                const compStr = Object.entries(counts).map(([k,v]) => `<b style="color:#333">${k}</b>:${v}`).join(' | ');
+
+                const first = indices[0];
+                const url = getDjaUrl(D.ra[first], D.dec[first], D.survey[first]);
+                
+                document.getElementById('browser-header').innerHTML = `
+                    <div style="display:flex; align-items:center; justify-content:space-between;">
+                        <div>
+                            <span class="info-tag" style="background:#333;">Stacked (N=${indices.length})</span>
+                            <span class="stat-tag">Median z: ${medZ}</span>
+                            <span style="font-size:0.9em; color:#555; margin-left:10px;">[ ${compStr} ]</span>
+                        </div>
+                        <div style="font-size:0.85em; color:#777;">
+                            Map: Representative ID ${D.ids[first]} <a href="${url}" target="_blank" style="color:#007bff;">Open ↗</a>
+                        </div>
+                    </div>
+                `;
+                document.getElementById('dja-frame').src = url;
+                
+                // Clear single selection marker, show multi-selection highlight
+                Plotly.restyle('umap-plot', {x: [[]], y: [[]]}, [singleMarkerIdx]);
+                Plotly.restyle('umap-plot', {
+                    x: [indices.map(i => D.umap[i][0])], 
+                    y: [indices.map(i => D.umap[i][1])]
+                }, [multiMarkerIdx]);
+
+                // ===== OBSERVER FRAME STACKING =====
+                const mediansObs = [], p16sObs = [], p84sObs = [];
+                for (let w = 0; w < D.wavelengths.length; w++) {
+                    const vals = [];
+                    for (let i of indices) if (D.fluxes[i][w] > 0) vals.push(D.fluxes[i][w]);
+                    
+                    if (vals.length === 0) { 
+                        mediansObs.push(null); p16sObs.push(null); p84sObs.push(null); 
+                    } else {
+                        vals.sort((a,b) => a - b);
+                        mediansObs.push(vals[Math.floor(vals.length * 0.50)]);
+                        p16sObs.push(vals[Math.floor(vals.length * 0.16)]);
+                        p84sObs.push(vals[Math.floor(vals.length * 0.84)]);
+                    }
+                }
+
+                sedLayout.title = `Observer Frame (Median z=${medZ})`;
+                Plotly.react('sed-plot', [
+                    { x: D.wavelengths, y: p16sObs, mode: 'lines', line: {width: 0}, showlegend: false, hoverinfo: 'none' },
+                    { x: D.wavelengths, y: p84sObs, mode: 'lines', line: {width: 0}, fill: 'tonexty', fillcolor: 'rgba(214, 39, 40, 0.2)', name: '16-84th Perc.', hoverinfo: 'none' },
+                    { x: D.wavelengths, y: mediansObs, mode: 'lines+markers', line: {color: '#d62728', width: 2}, name: `Median` }
+                ], sedLayout);
+
+                // ===== REST FRAME STACKING (INTERPOLATION-BASED, "LIKE PYTHON") =====
+                // Helper: quantile on sorted array
+                function quantileSorted(sortedArr, q) {
+                    if (sortedArr.length === 0) return null;
+                    const pos = (sortedArr.length - 1) * q;
+                    const base = Math.floor(pos);
+                    const rest = pos - base;
+                    if (sortedArr[base + 1] !== undefined) {
+                        return sortedArr[base] + rest * (sortedArr[base + 1] - sortedArr[base]);
+                    }
+                    return sortedArr[base];
+                }
+
+                // Helper: log10
+                function log10(x) { return Math.log(x) / Math.LN10; }
+
+                // Collect all valid rest-frame wavelengths to define global range
+                const allRestWaves = [];
+                for (let i of indices) {
+                    const z = D.zphot[i];
+                    if (!isFinite(z) || z <= -0.5) continue;
+                    for (let w = 0; w < D.wavelengths.length; w++) {
+                        const flux = D.fluxes[i][w];
+                        if (flux > 0) allRestWaves.push(D.wavelengths[w] / (1 + z));
+                    }
+                }
+
+                if (allRestWaves.length === 0) {
+                    sedRestLayout.title = `Rest Frame: No valid data`;
+                    Plotly.react('sed-rest-plot', [], sedRestLayout);
+                    Plotly.react('histogram-plot', [], histLayout);
+                    return;
+                }
+
+                // Determine global min/max rest wavelength
+                allRestWaves.sort((a, b) => a - b);
+                const restWavelengthMin = allRestWaves[0];
+                const restWavelengthMax = allRestWaves[allRestWaves.length - 1];
+
+                const nBins = 30; // keep your choice; can increase (e.g. 40-60) if you want smoother curves
+                const logMin = log10(restWavelengthMin);
+                const logMax = log10(restWavelengthMax);
+                const restBins = Array.from({length: nBins}, (_, b) =>
+                    Math.pow(10, logMin + (logMax - logMin) * b / (nBins - 1))
+                );
+
+                // Precompute log-grid
+                const restBinsLog = restBins.map(x => Math.log(x));  // natural log for interpolation
+
+                // Build matrix: one interpolated value per object per bin (null outside coverage)
+                const mat = [];     // mat[row][b] = flux or null
+                const usedObj = []; // indices of objects actually used
+                for (let i of indices) {
+                    const z = D.zphot[i];
+                    if (!isFinite(z) || z <= -0.5) continue;
+
+                    // Build per-object rest-frame x,y arrays (only flux>0)
+                    const xs = [];
+                    const ys = [];
+                    for (let w = 0; w < D.wavelengths.length; w++) {
+                        const flux = D.fluxes[i][w];
+                        if (!(flux > 0)) continue;
+                        const rw = D.wavelengths[w] / (1 + z);
+                        if (isFinite(rw) && isFinite(flux)) {
+                            xs.push(rw);
+                            ys.push(flux);
+                        }
+                    }
+
+                    if (xs.length < 2) continue;
+
+                    // Sort by x (ascending)
+                    const order = xs.map((x, idx) => [x, idx]).sort((a,b) => a[0] - b[0]).map(p => p[1]);
+                    const xSorted = order.map(j => xs[j]);
+                    const ySorted = order.map(j => ys[j]);
+
+                    // Interpolate in log-lambda space: y = interp(log(xg), log(xs))
+                    const xLog = xSorted.map(v => Math.log(v));
+                    const row = new Array(nBins).fill(null);
+
+                    const xmin = xLog[0];
+                    const xmax = xLog[xLog.length - 1];
+
+                    // For each bin, if inside range -> linear interpolation
+                    // (Two-pointer walk for efficiency)
+                    let j = 0;
+                    for (let b = 0; b < nBins; b++) {
+                        const xb = restBinsLog[b];
+                        if (xb < xmin || xb > xmax) {
+                            row[b] = null;
+                            continue;
+                        }
+
+                        // Advance j so that xLog[j] <= xb <= xLog[j+1]
+                        while (j < xLog.length - 2 && xLog[j + 1] < xb) j++;
+
+                        const x0 = xLog[j], x1 = xLog[j + 1];
+                        const y0 = ySorted[j], y1 = ySorted[j + 1];
+
+                        if (!(isFinite(x0) && isFinite(x1) && isFinite(y0) && isFinite(y1)) || x1 === x0) {
+                            row[b] = null;
+                            continue;
+                        }
+
+                        const t = (xb - x0) / (x1 - x0);
+                        const yb = y0 + t * (y1 - y0);
+                        row[b] = (isFinite(yb) && yb > 0) ? yb : null;
+                    }
+
+                    mat.push(row);
+                    usedObj.push(i);
+                }
+
+                // If too few objects survived
+                if (mat.length < 2) {
+                    const sedRestLayoutUpdate = {...sedRestLayout};
+                    sedRestLayoutUpdate.title = `Rest Frame: insufficient objects`;
+                    Plotly.react('sed-rest-plot', [], sedRestLayoutUpdate);
+                    Plotly.react('histogram-plot', [], histLayout);
+                    return;
+                }
+
+                // Compute stats per bin across objects (ignore nulls)
+                const mediansRest = new Array(nBins).fill(null);
+                const p16sRest = new Array(nBins).fill(null);
+                const p84sRest = new Array(nBins).fill(null);
+                const binCounts = new Array(nBins).fill(0);
+
+                for (let b = 0; b < nBins; b++) {
+                    const vals = [];
+                    for (let r = 0; r < mat.length; r++) {
+                        const v = mat[r][b];
+                        if (v !== null && isFinite(v)) vals.push(v);
+                    }
+                    binCounts[b] = vals.length; // <-- number of SEDs contributing at this bin
+
+                    if (vals.length === 0) continue;
+
+                    vals.sort((a, b) => a - b);
+                    p16sRest[b] = quantileSorted(vals, 0.16);
+                    mediansRest[b] = quantileSorted(vals, 0.50);
+                    p84sRest[b] = quantileSorted(vals, 0.84);
+                }
+
+                // Update rest-frame plot with same autoscaled x-axis range logic you already had
+                const sedRestLayoutUpdate = {...sedRestLayout};
+                sedRestLayoutUpdate.title = `Rest Frame (Median z=${medZ}, N=${indices.length})`;
+                sedRestLayoutUpdate.xaxis = {
+                    ...sedRestLayout.xaxis,
+                    range: [log10(restWavelengthMin * 0.9), log10(restWavelengthMax * 1.1)]
+                };
+
+                Plotly.react('sed-rest-plot', [
+                    { x: restBins, y: p16sRest, mode: 'lines', line: {width: 0}, showlegend: false, hoverinfo: 'none' },
+                    { x: restBins, y: p84sRest, mode: 'lines', line: {width: 0}, fill: 'tonexty',
+                    fillcolor: 'rgba(44, 160, 44, 0.2)', name: '16-84th Perc.', hoverinfo: 'none' },
+                    { x: restBins, y: mediansRest, mode: 'lines+markers',
+                    line: {color: '#2ca02c', width: 2}, marker: {size: 4}, name: `Median Rest` }
+                ], sedRestLayoutUpdate);
+
+                // Histogram: now counts are SEDs contributing per bin (not points)
+                const histLayoutUpdate = {...histLayout};
+                histLayoutUpdate.title.text = `SED count per bin (max=${Math.max(...binCounts)})`;
+                histLayoutUpdate.xaxis = {
+                    ...histLayout.xaxis,
+                    range: [log10(restWavelengthMin * 0.9), log10(restWavelengthMax * 1.1)]
+                };
+
+                Plotly.react('histogram-plot', [{
+                    x: restBins,
+                    y: binCounts,
+                    type: 'line', 
+                    marker: { color: '#1f77b4', opacity: 0.7 }
+                }], histLayoutUpdate);
+
+            }
+
+        } catch (e) {
+            showError(e.message + "\n" + e.stack);
+        }
+    }
+</script>
+</body>
+</html>
