@@ -23,12 +23,57 @@
         
         #controls { padding: 8px 15px; background: #333; color: white; border-bottom: 1px solid #000; display: flex; align-items: center; font-size: 14px; }
         
+        #color-controls { 
+            padding: 8px 15px; 
+            background: #444; 
+            color: white; 
+            border-bottom: 1px solid #222; 
+            display: flex; 
+            align-items: center; 
+            gap: 15px;
+            font-size: 13px;
+        }
+        
+        .color-btn {
+            padding: 5px 12px;
+            background: #666;
+            color: white;
+            border: 2px solid transparent;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+        
+        .color-btn:hover {
+            background: #777;
+        }
+        
+        .color-btn.active {
+            background: #007bff;
+            border-color: #0056b3;
+        }
+        
         #browser-header { padding: 10px; background: #f8f9fa; border-bottom: 1px solid #ddd; font-size: 14px; font-family: sans-serif; line-height: 1.5; }
         
         iframe { width: 100%; height: 100%; border: none; }
         
         .info-tag { padding: 3px 6px; border-radius: 3px; color: white; font-weight: bold; font-size: 0.9em; margin-right: 5px; display: inline-block; }
         .stat-tag { background: #6c757d; color: white; padding: 2px 6px; border-radius: 3px; font-weight: bold; font-size: 0.9em; }
+        
+        .morph-info {
+            background: #f8f9fa;
+            border-left: 3px solid #007bff;
+            padding: 8px 12px;
+            margin: 8px 0;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        
+        .morph-info b {
+            color: #333;
+        }
         
         #error-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 9999; padding: 40px; color: #d62728; font-family: monospace; white-space: pre-wrap; font-size: 16px; border: 5px solid #d62728;}
         #loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,1); z-index: 5000; display: flex; justify-content: center; align-items: center; font-size: 1.5em; color: #333; flex-direction: column;}
@@ -51,41 +96,33 @@
             console.error(msg);
         }
 
-        // --- NEW: Decompression Logic ---
         async function loadData() {
             try {
-                // 1. Fetch the compressed file
                 const response = await fetch('galaxy_data.js.gz');
                 if (!response.ok) throw new Error(`HTTP Error ${response.status}: ${response.statusText}`);
 
-                // 2. Use native DecompressionStream (GZIP)
                 const ds = new DecompressionStream('gzip');
                 const decompressedStream = response.body.pipeThrough(ds);
 
-                // 3. Convert stream to text
                 const blob = await new Response(decompressedStream).blob();
                 const scriptContent = await blob.text();
 
-                // 4. Inject the script into the page
                 const script = document.createElement('script');
                 script.text = scriptContent;
                 document.body.appendChild(script);
 
-                // 5. Hide loading and start the app
                 document.getElementById('loading-overlay').style.display = 'none';
                 initDashboard();
 
             } catch (err) {
-                // Fallback suggestion
                 let extra = "";
                 if (window.location.protocol === 'file:') {
-                    extra = "\n\n⚠️ NOTE: You are running this file via 'file://'.\nBrowsers block fetching files locally for security.\nPlease run a local server (e.g., 'python -m http.server') and open localhost.";
+                    extra = "\n\n⚠️ NOTE: You are running via 'file://'.\nRun a local server: python -m http.server";
                 }
-                showError("Failed to load/decompress galaxy_data.js.gz:\n" + err.message + extra);
+                showError("Failed to load galaxy_data.js.gz:\n" + err.message + extra);
             }
         }
 
-        // Start loading immediately
         loadData();
     </script>
 
@@ -93,8 +130,16 @@
         <b style="font-size:1.1em; margin-right: 20px;">Compressed Universe Viewer + DJA</b> 
         <span style="color:#aaa; font-size:0.9em;">
             🖱️ <b>Click:</b> Single object &nbsp;|&nbsp; 
-            ⭕ <b>Lasso/Box (top-right menu):</b> Stacked SED (Observer + Rest-frame)
+            ⭕ <b>Lasso/Box:</b> Stacked SED
         </span>
+    </div>
+
+    <div id="color-controls">
+        <span style="font-weight: bold;">Color by:</span>
+        <button class="color-btn active" data-mode="catalogs">Catalogs</button>
+        <button class="color-btn" data-mode="zphot">Photo-z</button>
+        <button class="color-btn" data-mode="ref_flux">Flux Scale</button>
+        <button class="color-btn" data-mode="classstar">ClassStarSE</button>
     </div>
 
     <div id="main-container">
@@ -122,13 +167,13 @@
     </div>
 
 <script>
-    // Wraps the original logic to be called after data load
     function initDashboard() {
         try {
-            if (typeof window.GALAXY_DATA === 'undefined') throw new Error("Data loaded but GALAXY_DATA object is missing.");
+            if (typeof window.GALAXY_DATA === 'undefined') throw new Error("GALAXY_DATA missing");
             const D = window.GALAXY_DATA;
             
-            // URL CONFIGURATION
+            let currentColorMode = 'catalogs';
+            
             const SURVEY_CONFIG = {
                 'A2744O':   { field: 'abell2744', url_type: 'jwst', zoom: 9 },
                 'CEERSO':   { field: 'egs-v2',    url_type: 'index', zoom: 9 },
@@ -148,54 +193,98 @@
                 return `${base}/jwst.html?coord=${c}&zoom=${config.zoom}`;
             }
 
-            // ================= UMAP PLOT =================
-            const allIndices = Array.from({length: D.ra.length}, (_, i) => i);
-            const specialIndices = new Set();
-            Object.values(D.catalog_indices).forEach(arr => arr.forEach(idx => specialIndices.add(idx)));
-            const bgIndices = allIndices.filter(i => !specialIndices.has(i));
+            function buildUmapTraces() {
+                const traces = [];
+                
+                if (currentColorMode === 'catalogs') {
+                    const allIndices = Array.from({length: D.ra.length}, (_, i) => i);
+                    const specialIndices = new Set();
+                    Object.values(D.catalog_indices).forEach(arr => arr.forEach(idx => specialIndices.add(idx)));
+                    const bgIndices = allIndices.filter(i => !specialIndices.has(i));
 
-            const traces = [];
-            // Background points
-            traces.push({
-                x: bgIndices.map(i => D.umap[i][0]),
-                y: bgIndices.map(i => D.umap[i][1]),
-                customdata: bgIndices,
-                mode: 'markers',
-                type: 'scattergl',
-                marker: { size: 3, color: '#dddddd', opacity: 0.5 },
-                hoverinfo: 'none',
-                name: 'Background'
-            });
+                    traces.push({
+                        x: bgIndices.map(i => D.umap[i][0]),
+                        y: bgIndices.map(i => D.umap[i][1]),
+                        customdata: bgIndices,
+                        mode: 'markers',
+                        type: 'scattergl',
+                        marker: { size: 3, color: '#dddddd', opacity: 0.5 },
+                        hoverinfo: 'none',
+                        name: 'Background'
+                    });
 
-            // Catalog points
-            for (const [key, indices] of Object.entries(D.catalog_indices)) {
-                if (indices.length === 0) continue;
+                    for (const [key, indices] of Object.entries(D.catalog_indices)) {
+                        if (indices.length === 0) continue;
+                        traces.push({
+                            x: indices.map(i => D.umap[i][0]),
+                            y: indices.map(i => D.umap[i][1]),
+                            customdata: indices,
+                            mode: 'markers',
+                            type: 'scattergl',
+                            marker: { size: 6, color: D.catalog_colors[key], line: {color: 'black', width: 0.5} },
+                            name: D.catalog_labels[key],
+                            text: indices.map(i => `ID: ${D.ids[i]}`),
+                            hovertemplate: '<b>%{text}</b><extra></extra>'
+                        });
+                    }
+                    
+                } else {
+                    const allIndices = Array.from({length: D.ra.length}, (_, i) => i);
+                    
+                    let colorValues, colorLabel, colorscale;
+                    
+                    if (currentColorMode === 'zphot') {
+                        colorValues = D.zphot;
+                        // colorValues = D.zphot.map(z => Math.log10(z + 1));
+                        colorLabel = 'Photo-z';
+                        colorscale = 'Hot';
+                    } else if (currentColorMode === 'ref_flux') {
+                        colorValues = D.ref_flux.map(f => Math.log10(f + 1e-30));
+                        colorLabel = `log10(${D.ref_filter_name})`;
+                        colorscale = 'Plasma';
+                    } else if (currentColorMode === 'classstar') {
+                        colorValues = D.classstar;
+                        colorLabel = 'ClassStarSE';
+                        colorscale = 'RdYlBu';
+                    }
+                    
+                    traces.push({
+                        x: allIndices.map(i => D.umap[i][0]),
+                        y: allIndices.map(i => D.umap[i][1]),
+                        customdata: allIndices,
+                        mode: 'markers',
+                        type: 'scattergl',
+                        marker: { 
+                            size: 4, 
+                            color: colorValues,
+                            colorscale: colorscale,
+                            colorbar: {
+                                title: colorLabel,
+                                len: 0.7,
+                                thickness: 15
+                            },
+                            line: {color: 'rgba(0,0,0,0.1)', width: 0.5}
+                        },
+                        text: allIndices.map(i => `ID: ${D.ids[i]}`),
+                        hovertemplate: '<b>%{text}</b><extra></extra>',
+                        showlegend: false
+                    });
+                }
+                
                 traces.push({
-                    x: indices.map(i => D.umap[i][0]),
-                    y: indices.map(i => D.umap[i][1]),
-                    customdata: indices,
-                    mode: 'markers',
-                    type: 'scattergl',
-                    marker: { size: 6, color: D.catalog_colors[key], line: {color: 'black', width: 0.5} },
-                    name: D.catalog_labels[key],
-                    text: indices.map(i => `ID: ${D.ids[i]}`),
-                    hovertemplate: '<b>%{text}</b><extra></extra>'
+                    x: [], y: [], mode: 'markers', type: 'scattergl',
+                    marker: { size: 12, color: 'rgba(0,0,0,0)', line: {color: 'red', width: 2} },
+                    name: 'Selected', hoverinfo: 'none', showlegend: false
                 });
-            }
-            
-            // Single selection marker
-            traces.push({
-                x: [], y: [], mode: 'markers', type: 'scattergl',
-                marker: { size: 12, color: 'rgba(0,0,0,0)', line: {color: 'red', width: 2} },
-                name: 'Selected', hoverinfo: 'none', showlegend: false
-            });
 
-            // Multi-selection highlight (transparent red overlay)
-            traces.push({
-                x: [], y: [], mode: 'markers', type: 'scattergl',
-                marker: { size: 8, color: 'rgba(255,0,0,0.3)', line: {color: 'red', width: 1} },
-                name: 'Multi-Selected', hoverinfo: 'none', showlegend: false
-            });
+                traces.push({
+                    x: [], y: [], mode: 'markers', type: 'scattergl',
+                    marker: { size: 8, color: 'rgba(255,0,0,0.3)', line: {color: 'red', width: 1} },
+                    name: 'Multi-Selected', hoverinfo: 'none', showlegend: false
+                });
+                
+                return traces;
+            }
 
             const umapLayout = {
                 title: 'UMAP Space', 
@@ -232,15 +321,33 @@
                 bargap: 0.1
             };
 
-            Plotly.newPlot('umap-plot', traces, umapLayout, {responsive: true});        
+            let initialTraces = buildUmapTraces();
+            
+            Plotly.newPlot('umap-plot', initialTraces, umapLayout, {responsive: true});        
             Plotly.newPlot('sed-plot', [], sedLayout, {responsive: true});
             Plotly.newPlot('sed-rest-plot', [], sedRestLayout, {responsive: true});
             Plotly.newPlot('histogram-plot', [], histLayout, {responsive: true});
 
-            // ================= INTERACTIONS =================
+            document.querySelectorAll('.color-btn').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    const mode = this.dataset.mode;
+                    document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    currentColorMode = mode;
+                    const newTraces = buildUmapTraces();
+                    Plotly.react('umap-plot', newTraces, umapLayout);
+                });
+            });
+
             const umapDiv = document.getElementById('umap-plot');
-            const singleMarkerIdx = traces.length - 2;  // Second to last trace
-            const multiMarkerIdx = traces.length - 1;   // Last trace
+            
+            function getSingleMarkerIdx() {
+                return umapDiv.data.length - 2;
+            }
+            
+            function getMultiMarkerIdx() {
+                return umapDiv.data.length - 1;
+            }
             
             umapDiv.on('plotly_click', function(data){
                 if(!data.points || data.points.length === 0) return;
@@ -261,47 +368,81 @@
                 else if (indices.length > 1) updateStackedSed(indices);
             });
 
-            // ================= UPDATE LOGIC =================
-
             function updateSingleObject(idx) {
                 const ra = D.ra[idx], dec = D.dec[idx], survey = D.survey[idx], id = D.ids[idx];
                 const url = getDjaUrl(ra, dec, survey);
                 const z = D.zphot[idx];
+                const classstar = D.classstar[idx];
+                const r50 = D.r50[idx];
                 
                 document.getElementById('browser-header').innerHTML = 
-                    `<span class="info-tag" style="background:#007bff">ID: ${id}</span>` +
-                    `<span class="info-tag" style="background:#28a745">${survey}</span>` +
-                    `<span class="info-tag" style="background:#6c757d">z: ${z.toFixed(3)}</span>` +
-                    ` &nbsp; Coords: ${ra.toFixed(6)}, ${dec.toFixed(6)}` +
-                    ` &nbsp; <a href="${url}" target="_blank" style="color:#007bff; text-decoration:none;">Open ↗</a>`;
+                    `<div style="display:flex; flex-direction:column; gap:8px;">
+                        <div>
+                            <span class="info-tag" style="background:#007bff">ID: ${id}</span>
+                            <span class="info-tag" style="background:#28a745">${survey}</span>
+                            <span class="info-tag" style="background:#6c757d">z: ${z.toFixed(3)}</span>
+                            &nbsp; Coords: ${ra.toFixed(6)}, ${dec.toFixed(6)}
+                            &nbsp; <a href="${url}" target="_blank" style="color:#007bff; text-decoration:none;">Open ↗</a>
+                        </div>
+                        <div class="morph-info">
+                            <b>Morphology:</b> ClassStarSE = ${classstar.toFixed(3)} &nbsp;|&nbsp; r50 = ${r50.toFixed(2)} px
+                            <span style="color:#666; font-size:0.9em;">
+                                ${classstar > 0.8 ? ' (Point-like/Star)' : classstar < 0.3 ? ' (Extended)' : ' (Compact)'}
+                            </span>
+                        </div>
+                    </div>`;
                 
                 document.getElementById('dja-frame').src = url;
                 
-                // Clear multi-selection highlight, show single selection marker
-                Plotly.restyle('umap-plot', { x: [[]], y: [[]] }, [multiMarkerIdx]);
-                Plotly.restyle('umap-plot', { x: [[D.umap[idx][0]]], y: [[D.umap[idx][1]]] }, [singleMarkerIdx]);
+                const singleIdx = getSingleMarkerIdx();
+                const multiIdx = getMultiMarkerIdx();
+                Plotly.restyle('umap-plot', { x: [[]], y: [[]] }, [multiIdx]);
+                Plotly.restyle('umap-plot', { x: [[D.umap[idx][0]]], y: [[D.umap[idx][1]]] }, [singleIdx]);
 
-                // Observer-frame SED
-                const xObs = [], yObs = [];
+                const xObs = [], yObs = [], errObs = [];
                 for(let k=0; k<D.wavelengths.length; k++) {
                     if(D.fluxes[idx][k] > 0) { 
                         xObs.push(D.wavelengths[k]); 
-                        yObs.push(D.fluxes[idx][k]); 
+                        yObs.push(D.fluxes[idx][k]);
+                        errObs.push(D.flux_errors[idx][k]);
                     }
                 }
 
                 sedLayout.title = `Observer Frame: ID ${id}`;
                 Plotly.react('sed-plot', [{
-                    x: xObs, y: yObs, mode: 'lines+markers', name: `ID ${id}`,
-                    marker: {size: 8}, line: {color: '#d62728', width: 2}
+                    x: xObs, 
+                    y: yObs, 
+                    error_y: {
+                        type: 'data',
+                        array: errObs,
+                        visible: true,
+                        color: '#d62728',
+                        thickness: 1.5,
+                        width: 3
+                    },
+                    mode: 'lines+markers', 
+                    name: `ID ${id}`,
+                    marker: {size: 8}, 
+                    line: {color: '#d62728', width: 2}
                 }], sedLayout);
 
-                // Rest-frame SED
                 const xRest = xObs.map(w => w / (1 + z));
                 sedRestLayout.title = `Rest Frame: ID ${id} (z=${z.toFixed(3)})`;
                 Plotly.react('sed-rest-plot', [{
-                    x: xRest, y: yObs, mode: 'lines+markers', name: `ID ${id}`,
-                    marker: {size: 8}, line: {color: '#2ca02c', width: 2}
+                    x: xRest, 
+                    y: yObs, 
+                    error_y: {
+                        type: 'data',
+                        array: errObs,
+                        visible: true,
+                        color: '#2ca02c',
+                        thickness: 1.5,
+                        width: 3
+                    },
+                    mode: 'lines+markers', 
+                    name: `ID ${id}`,
+                    marker: {size: 8}, 
+                    line: {color: '#2ca02c', width: 2}
                 }], sedRestLayout);
 
                 Plotly.react('histogram-plot', [], histLayout);
@@ -314,7 +455,7 @@
 
                 const counts = {};
                 indices.forEach(i => { counts[D.survey[i]] = (counts[D.survey[i]] || 0) + 1; });
-                const compStr = Object.entries(counts).map(([k,v]) => `<b style="color:#333">${k}</b>:${v}`).join(' | ');
+                const compStr = Object.entries(counts).map(([k,v]) => `<b>${k}</b>:${v}`).join(' | ');
 
                 const first = indices[0];
                 const url = getDjaUrl(D.ra[first], D.dec[first], D.survey[first]);
@@ -327,20 +468,20 @@
                             <span style="font-size:0.9em; color:#555; margin-left:10px;">[ ${compStr} ]</span>
                         </div>
                         <div style="font-size:0.85em; color:#777;">
-                            Map: Representative ID ${D.ids[first]} <a href="${url}" target="_blank" style="color:#007bff;">Open ↗</a>
+                            Map: ID ${D.ids[first]} <a href="${url}" target="_blank" style="color:#007bff;">Open ↗</a>
                         </div>
                     </div>
                 `;
                 document.getElementById('dja-frame').src = url;
                 
-                // Clear single selection marker, show multi-selection highlight
-                Plotly.restyle('umap-plot', {x: [[]], y: [[]]}, [singleMarkerIdx]);
+                const singleIdx = getSingleMarkerIdx();
+                const multiIdx = getMultiMarkerIdx();
+                Plotly.restyle('umap-plot', {x: [[]], y: [[]]}, [singleIdx]);
                 Plotly.restyle('umap-plot', {
                     x: [indices.map(i => D.umap[i][0])], 
                     y: [indices.map(i => D.umap[i][1])]
-                }, [multiMarkerIdx]);
+                }, [multiIdx]);
 
-                // ===== OBSERVER FRAME STACKING =====
                 const mediansObs = [], p16sObs = [], p84sObs = [];
                 for (let w = 0; w < D.wavelengths.length; w++) {
                     const vals = [];
@@ -363,8 +504,6 @@
                     { x: D.wavelengths, y: mediansObs, mode: 'lines+markers', line: {color: '#d62728', width: 2}, name: `Median` }
                 ], sedLayout);
 
-                // ===== REST FRAME STACKING (INTERPOLATION-BASED, "LIKE PYTHON") =====
-                // Helper: quantile on sorted array
                 function quantileSorted(sortedArr, q) {
                     if (sortedArr.length === 0) return null;
                     const pos = (sortedArr.length - 1) * q;
@@ -376,10 +515,8 @@
                     return sortedArr[base];
                 }
 
-                // Helper: log10
                 function log10(x) { return Math.log(x) / Math.LN10; }
 
-                // Collect all valid rest-frame wavelengths to define global range
                 const allRestWaves = [];
                 for (let i of indices) {
                     const z = D.zphot[i];
@@ -397,29 +534,25 @@
                     return;
                 }
 
-                // Determine global min/max rest wavelength
                 allRestWaves.sort((a, b) => a - b);
                 const restWavelengthMin = allRestWaves[0];
                 const restWavelengthMax = allRestWaves[allRestWaves.length - 1];
 
-                const nBins = 30; // keep your choice; can increase (e.g. 40-60) if you want smoother curves
+                const nBins = 30;
                 const logMin = log10(restWavelengthMin);
                 const logMax = log10(restWavelengthMax);
                 const restBins = Array.from({length: nBins}, (_, b) =>
                     Math.pow(10, logMin + (logMax - logMin) * b / (nBins - 1))
                 );
 
-                // Precompute log-grid
-                const restBinsLog = restBins.map(x => Math.log(x));  // natural log for interpolation
+                const restBinsLog = restBins.map(x => Math.log(x));
 
-                // Build matrix: one interpolated value per object per bin (null outside coverage)
-                const mat = [];     // mat[row][b] = flux or null
-                const usedObj = []; // indices of objects actually used
+                const mat = [];
+                const usedObj = [];
                 for (let i of indices) {
                     const z = D.zphot[i];
                     if (!isFinite(z) || z <= -0.5) continue;
 
-                    // Build per-object rest-frame x,y arrays (only flux>0)
                     const xs = [];
                     const ys = [];
                     for (let w = 0; w < D.wavelengths.length; w++) {
@@ -434,29 +567,26 @@
 
                     if (xs.length < 2) continue;
 
-                    // Sort by x (ascending)
                     const order = xs.map((x, idx) => [x, idx]).sort((a,b) => a[0] - b[0]).map(p => p[1]);
                     const xSorted = order.map(j => xs[j]);
                     const ySorted = order.map(j => ys[j]);
 
-                    // Interpolate in log-lambda space: y = interp(log(xg), log(xs))
                     const xLog = xSorted.map(v => Math.log(v));
                     const row = new Array(nBins).fill(null);
 
                     const xmin = xLog[0];
                     const xmax = xLog[xLog.length - 1];
 
-                    // For each bin, if inside range -> linear interpolation
-                    // (Two-pointer walk for efficiency)
                     let j = 0;
                     for (let b = 0; b < nBins; b++) {
                         const xb = restBinsLog[b];
                         if (xb < xmin || xb > xmax) {
+                            row[b] = null
+
                             row[b] = null;
                             continue;
                         }
 
-                        // Advance j so that xLog[j] <= xb <= xLog[j+1]
                         while (j < xLog.length - 2 && xLog[j + 1] < xb) j++;
 
                         const x0 = xLog[j], x1 = xLog[j + 1];
@@ -476,7 +606,6 @@
                     usedObj.push(i);
                 }
 
-                // If too few objects survived
                 if (mat.length < 2) {
                     const sedRestLayoutUpdate = {...sedRestLayout};
                     sedRestLayoutUpdate.title = `Rest Frame: insufficient objects`;
@@ -485,7 +614,6 @@
                     return;
                 }
 
-                // Compute stats per bin across objects (ignore nulls)
                 const mediansRest = new Array(nBins).fill(null);
                 const p16sRest = new Array(nBins).fill(null);
                 const p84sRest = new Array(nBins).fill(null);
@@ -497,7 +625,7 @@
                         const v = mat[r][b];
                         if (v !== null && isFinite(v)) vals.push(v);
                     }
-                    binCounts[b] = vals.length; // <-- number of SEDs contributing at this bin
+                    binCounts[b] = vals.length;
 
                     if (vals.length === 0) continue;
 
@@ -507,7 +635,6 @@
                     p84sRest[b] = quantileSorted(vals, 0.84);
                 }
 
-                // Update rest-frame plot with same autoscaled x-axis range logic you already had
                 const sedRestLayoutUpdate = {...sedRestLayout};
                 sedRestLayoutUpdate.title = `Rest Frame (Median z=${medZ}, N=${indices.length})`;
                 sedRestLayoutUpdate.xaxis = {
@@ -523,7 +650,6 @@
                     line: {color: '#2ca02c', width: 2}, marker: {size: 4}, name: `Median Rest` }
                 ], sedRestLayoutUpdate);
 
-                // Histogram: now counts are SEDs contributing per bin (not points)
                 const histLayoutUpdate = {...histLayout};
                 histLayoutUpdate.title.text = `SED count per bin (max=${Math.max(...binCounts)})`;
                 histLayoutUpdate.xaxis = {
@@ -537,7 +663,6 @@
                     type: 'line', 
                     marker: { color: '#1f77b4', opacity: 0.7 }
                 }], histLayoutUpdate);
-
             }
 
         } catch (e) {
