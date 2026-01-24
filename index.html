@@ -18,7 +18,13 @@
         #histogram-panel { height: 120px; border-bottom: 1px solid #ccc; background: #fafafa; }
         #sed-rest-plot { flex: 1; }
         
-        #iframe-container { flex: 1; background: white; display: flex; flex-direction: column; min-height: 200px; }
+        
+        #bottom-container { flex: 1; display: flex; min-height: 220px; background: #f4f4f4; }
+        #barro-panel { flex: 0.5; border-right: 1px solid #ccc; background: white; min-width: 300px; display: flex; flex-direction: column; }
+        #barro-header { padding: 8px 10px; background: #f8f9fa; border-bottom: 1px solid #ddd; font-size: 13px; color: #333; }
+
+        #iframe-container { flex: 1; background: white; display: flex; flex-direction: column; min-height: 220px; }
+        #iframe-container { border-left: 1px solid #ccc; }
         .plot-div { width: 100%; height: 100%; }
         
         #controls { padding: 8px 15px; background: #333; color: white; border-bottom: 1px solid #000; display: flex; align-items: center; font-size: 14px; }
@@ -128,10 +134,13 @@
 
     <div id="controls">
         <b style="font-size:1.1em; margin-right: 20px;">Compressed Universe Viewer + DJA</b> 
-        <span style="color:#aaa; font-size:0.9em;">
+        <span style="color:#aaa; font-size:0.9em; flex: 1;">
             🖱️ <b>Click:</b> Single object &nbsp;|&nbsp; 
             ⭕ <b>Lasso/Box:</b> Stacked SED
         </span>
+        <button id="download-btn" disabled style="padding: 4px 10px; cursor: pointer; background: #555; border: 1px solid #777; color: white; border-radius: 4px; font-size: 0.9em;">
+            ⬇ Scarica CSV
+        </button>
     </div>
 
     <div id="color-controls">
@@ -161,9 +170,21 @@
         </div>
     </div>
 
-    <div id="iframe-container">
-        <div id="browser-header">Waiting for selection...</div>
-        <iframe id="dja-frame" src="about:blank"></iframe>
+    
+    <div id="bottom-container">
+        <div id="barro-panel">
+            <div id="barro-header">
+                <b>Barro-style Color–Color Diagram</b>
+                <span style="color:#666; font-size:0.9em;">&nbsp; (F115W−F200W vs F200W−F444W)</span>
+                <span id="barro-count" style="float:right; color:#007bff; font-weight:bold;">Selected: 0</span>
+            </div>
+            <div id="barro-plot" class="plot-div"></div>
+        </div>
+
+        <div id="iframe-container">
+            <div id="browser-header">Waiting for selection...</div>
+            <iframe id="dja-frame" src="about:blank"></iframe>
+        </div>
     </div>
 
 <script>
@@ -171,6 +192,88 @@
         try {
             if (typeof window.GALAXY_DATA === 'undefined') throw new Error("GALAXY_DATA missing");
             const D = window.GALAXY_DATA;
+            
+            let currentSelectionIndices = [];
+            const downloadBtn = document.getElementById('download-btn');
+
+            downloadBtn.addEventListener('click', function() {
+                if (currentSelectionIndices.length === 0) return;
+                downloadCsv(currentSelectionIndices);
+            });
+
+            function updateDownloadButtonState() {
+                if (currentSelectionIndices.length > 0) {
+                    downloadBtn.disabled = false;
+                    downloadBtn.style.background = "#28a745"; // Verde quando attivo
+                    downloadBtn.style.border = "1px solid #1e7e34";
+                    downloadBtn.innerText = `⬇ Scarica CSV (${currentSelectionIndices.length})`;
+                } else {
+                    downloadBtn.disabled = true;
+                    downloadBtn.style.background = "#555"; // Grigio quando disattivo
+                    downloadBtn.style.border = "1px solid #777";
+                    downloadBtn.innerText = "⬇ Scarica CSV";
+                }
+            }
+
+            function downloadCsv(indices) {
+                // DEFINIZIONE DELL'ORDINE ESATTO DEI FILTRI
+                const FILTER_NAMES = ["FF814W", "FF115W", "FF150W", "FF200W", "FF277W", "FF356W", "FF410M", "FF444W"];
+
+                // 1. Header Anagrafici
+                let headers = [
+                    "ID", "RA", "DEC", "Z_Phot", "Survey", 
+                    "UMAP_X", "UMAP_Y", "ClassStar", "R50_pix", "Ref_Flux"
+                ];
+                
+                // 2. Aggiungiamo gli Header dei Filtri (F_NomeFiltro e E_NomeFiltro)
+                FILTER_NAMES.forEach(name => {
+                    headers.push(`F_${name}`); // Colonna Flusso (es. F_FF814W)
+                    headers.push(`E_${name}`); // Colonna Errore (es. E_FF814W)
+                });
+
+                // 3. Costruzione Righe
+                const rows = indices.map(idx => {
+                    let row = [
+                        D.ids[idx],
+                        D.ra[idx].toFixed(7),
+                        D.dec[idx].toFixed(7),
+                        D.zphot[idx].toFixed(4),
+                        D.survey[idx],
+                        D.umap[idx][0].toFixed(5),
+                        D.umap[idx][1].toFixed(5),
+                        D.classstar[idx].toFixed(3),
+                        D.r50[idx].toFixed(3),
+                        D.ref_flux[idx].toExponential(3)
+                    ];
+
+                    // Dati Spettro: cicliamo esattamente per il numero di filtri definiti
+                    for(let k=0; k < FILTER_NAMES.length; k++) {
+                        // Prendiamo il flusso all'indice k, che corrisponde al nome all'indice k
+                        row.push(D.fluxes[idx][k].toExponential(4));
+                        row.push(D.flux_errors[idx][k].toExponential(4));
+                    }
+                    return row.join(",");
+                });
+
+                // 4. Creazione e Download File
+                const csvContent = [headers.join(","), ...rows].join("\n");
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+                
+                // Nome file dinamico
+                const filename = indices.length === 1 
+                    ? `galaxy_${D.ids[indices[0]]}.csv` 
+                    : `galaxy_selection_N${indices.length}.csv`;
+                
+                link.setAttribute("download", filename);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
             
             let currentColorMode = 'catalogs';
             
@@ -208,7 +311,7 @@
                         customdata: bgIndices,
                         mode: 'markers',
                         type: 'scattergl',
-                        marker: { size: 3, color: '#dddddd', opacity: 0.5 },
+                        marker: { size: 3, color: '#dddddd', opacity: 0.8 },
                         hoverinfo: 'none',
                         name: 'Background'
                     });
@@ -328,6 +431,119 @@
             Plotly.newPlot('sed-rest-plot', [], sedRestLayout, {responsive: true});
             Plotly.newPlot('histogram-plot', [], histLayout, {responsive: true});
 
+            // =====================
+            // Barro-style Color–Color Diagram
+            // =====================
+            const FLUX_COLS = ["FF814W","FF115W","FF150W","FF200W","FF277W","FF356W","FF410M","FF444W"]; // must match D.fluxes order
+            const band2i = Object.fromEntries(FLUX_COLS.map((b,i)=>[b,i]));
+            const i115 = band2i["FF115W"], i200 = band2i["FF200W"], i444 = band2i["FF444W"];
+
+            function colorMag(fA, fB){
+                if(!(fA > 0) || !(fB > 0) || !isFinite(fA) || !isFinite(fB)) return null;
+                return -2.5 * Math.log10(fA / fB);
+            }
+
+            const barroX = D.fluxes.map(row => colorMag(row[i115], row[i200]));
+            const barroY = D.fluxes.map(row => colorMag(row[i200], row[i444]));
+
+            function buildBarroTraces(){
+                const traces = [];
+
+                // base cloud (gray)
+                const bx = [], by = [];
+                for(let i=0; i<barroX.length; i++){
+                    if(barroX[i] === null || barroY[i] === null) continue;
+                    bx.push(barroX[i]); by.push(barroY[i]);
+                }
+                traces.push({
+                    x: bx, y: by,
+                    mode: 'markers', type: 'scattergl',
+                    marker: { size: 4, color: 'rgba(150,150,150,0.25)' },
+                    hoverinfo: 'skip',
+                    name: 'All'
+                });
+
+                // overlay catalogs (skip BLAGN)
+                const catalog_indices = D.catalog_indices || {};
+                const catalog_colors  = D.catalog_colors  || {};
+                const catalog_labels  = D.catalog_labels  || {};
+
+                for (const [name, idx_list] of Object.entries(catalog_indices)){
+                    if(name === 'BLAGN') continue;
+                    if(!idx_list || idx_list.length === 0) continue;
+                    const x = [], y = [], text = [];
+                    for(const idx of idx_list){
+                        if(barroX[idx] === null || barroY[idx] === null) continue;
+                        x.push(barroX[idx]); y.push(barroY[idx]);
+                        text.push(`ID: ${D.ids[idx]}`);
+                    }
+                    if(x.length === 0) continue;
+                    traces.push({
+                        x, y,
+                        mode: 'markers', type: 'scattergl',
+                        marker: { size: 9, color: catalog_colors[name] || 'C0', line: {color:'black', width:0.6} },
+                        name: catalog_labels[name] || name,
+                        text,
+                        hovertemplate: '<b>%{text}</b><extra></extra>'
+                    });
+                }
+
+                // wedge lines (as scatter line traces)
+                traces.push({
+                    x: [-0.8, 0.8], y: [1.0, 1.0],
+                    mode: 'lines', type: 'scatter',
+                    line: {color:'black', width: 2},
+                    hoverinfo: 'skip', showlegend: false
+                });
+                traces.push({
+                    x: [0.8, 3.0], y: [1.0, 3.0],
+                    mode: 'lines', type: 'scatter',
+                    line: {color:'black', width: 2},
+                    hoverinfo: 'skip', showlegend: false
+                });
+
+                // selection trace (blue open circles)
+                traces.push({
+                    x: [], y: [],
+                    mode: 'markers', type: 'scattergl',
+                    marker: { size: 15, color: 'rgba(0,0,0,0)', line: {color:'blue', width: 2.4} },
+                    name: 'Selection',
+                    hoverinfo: 'skip',
+                    showlegend: true
+                });
+
+                return traces;
+            }
+
+            const barroLayout = {
+                title: { text: 'Barro Diagram', font: { size: 12 } },
+                xaxis: { title: 'F115W − F200W  [mag]', range: [-0.8, 3.0] },
+                yaxis: { title: 'F200W − F444W  [mag]', range: [-0.5, 3.5] },
+                margin: { t: 35, l: 55, r: 10, b: 45 },
+                legend: { x: 0.02, y: 0.98, bgcolor: 'rgba(255,255,255,0.85)' },
+                hovermode: 'closest'
+            };
+
+            Plotly.newPlot('barro-plot', buildBarroTraces(), barroLayout, {responsive: true});
+
+            function getBarroSelectionTraceIdx(){
+                const div = document.getElementById('barro-plot');
+                return div.data.length - 1;
+            }
+
+            function updateBarroSelection(indices){
+                const xs = [], ys = [];
+                for(const idx of indices){
+                    if(barroX[idx] === null || barroY[idx] === null) continue;
+                    xs.push(barroX[idx]); ys.push(barroY[idx]);
+                }
+                const tIdx = getBarroSelectionTraceIdx();
+                Plotly.restyle('barro-plot', {x:[xs], y:[ys]}, [tIdx]);
+                const el = document.getElementById('barro-count');
+                if(el) el.textContent = `Selected: ${indices.length}`;
+            }
+
+
             document.querySelectorAll('.color-btn').forEach(btn => {
                 btn.addEventListener('click', function() {
                     const mode = this.dataset.mode;
@@ -353,17 +569,34 @@
                 if(!data.points || data.points.length === 0) return;
                 const idx = data.points[0].customdata;
                 if (typeof idx === 'undefined') return;
+                
+                // Aggiorna la selezione globale
+                currentSelectionIndices = [idx]; // <--- AGGIUNTO
+                updateDownloadButtonState();     // <--- AGGIUNTO
+                updateBarroSelection(currentSelectionIndices);
+                
                 updateSingleObject(idx);
             });
 
             umapDiv.on('plotly_selected', function(data){
                 if(!data || !data.points || data.points.length === 0) {
+                    // Selezione vuota / Deselezione
+                    currentSelectionIndices = []; // <--- AGGIUNTO
+                    updateDownloadButtonState();  // <--- AGGIUNTO
+                    updateBarroSelection(currentSelectionIndices);
+                    
                     Plotly.react('sed-plot', [], sedLayout);
                     Plotly.react('sed-rest-plot', [], sedRestLayout);
                     Plotly.react('histogram-plot', [], histLayout);
                     return;
                 }
                 const indices = [...new Set(data.points.map(pt => pt.customdata).filter(i => i !== undefined))];
+                
+                // Aggiorna la selezione globale
+                currentSelectionIndices = indices; // <--- AGGIUNTO
+                updateDownloadButtonState();       // <--- AGGIUNTO
+                updateBarroSelection(currentSelectionIndices);
+
                 if (indices.length === 1) updateSingleObject(indices[0]);
                 else if (indices.length > 1) updateStackedSed(indices);
             });
