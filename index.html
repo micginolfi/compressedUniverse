@@ -298,11 +298,21 @@
 
             function buildUmapTraces() {
                 const traces = [];
+                // Protezione contro null/undefined
+                const catalog_indices = D.catalog_indices || {};
+                const catalog_colors = D.catalog_colors || {};
+                const catalog_labels = D.catalog_labels || {};
                 
                 if (currentColorMode === 'catalogs') {
                     const allIndices = Array.from({length: D.ra.length}, (_, i) => i);
                     const specialIndices = new Set();
-                    Object.values(D.catalog_indices).forEach(arr => arr.forEach(idx => specialIndices.add(idx)));
+                                        
+                    // Raccogli indici speciali
+                    Object.entries(catalog_indices).forEach(([k, arr]) => {
+                        if (k === 'Spectroscopic') return; // <--- QUESTA RIGA SALVA I PUNTI GRIGI
+                        arr.forEach(idx => specialIndices.add(idx));
+                    });
+                                        
                     const bgIndices = allIndices.filter(i => !specialIndices.has(i));
 
                     traces.push({
@@ -316,29 +326,54 @@
                         name: 'Background'
                     });
 
-                    for (const [key, indices] of Object.entries(D.catalog_indices)) {
+                    // 1. Disegna i cataloghi normali (CERCHI)
+                    for (const [key, indices] of Object.entries(catalog_indices)) {
                         if (indices.length === 0) continue;
+                        if (key === 'Spectroscopic') continue; // Salta Spectroscopic qui
+
                         traces.push({
                             x: indices.map(i => D.umap[i][0]),
                             y: indices.map(i => D.umap[i][1]),
                             customdata: indices,
                             mode: 'markers',
                             type: 'scattergl',
-                            marker: { size: 6, color: D.catalog_colors[key], line: {color: 'black', width: 0.5} },
-                            name: D.catalog_labels[key],
+                            marker: { size: 6, color: catalog_colors[key], line: {color: 'black', width: 0.5} },
+                            name: catalog_labels[key],
                             text: indices.map(i => `ID: ${D.ids[i]}`),
+                            hovertemplate: '<b>%{text}</b><extra></extra>'
+                        });
+                    }
+
+                    // 2. Disegna Spectroscopic come OVERLAY (CERCHI TRASPARENTI)
+                    if (catalog_indices['Spectroscopic'] && catalog_indices['Spectroscopic'].length > 0) {
+                        const specIndices = catalog_indices['Spectroscopic'];
+                        traces.push({
+                            x: specIndices.map(i => D.umap[i][0]),
+                            y: specIndices.map(i => D.umap[i][1]),
+                            customdata: specIndices,
+                            mode: 'markers',
+                            type: 'scattergl',
+                            marker: { 
+                                symbol: 'square',           // Invece di 'x'
+                                size: 6,                    // Leggermente più grande per circondare il punto sotto
+                                color: 'rgba(0,0,0,0)',     // Riempimento TRASPARENTE
+                                line: {
+                                    color: 'purple', 
+                                    width: 1             // Spessore del cerchietto
+                                }
+                            },
+                            name: catalog_labels['Spectroscopic'] || 'Spectroscopic',
+                            text: specIndices.map(i => `ID: ${D.ids[i]} (Spec)`),
                             hovertemplate: '<b>%{text}</b><extra></extra>'
                         });
                     }
                     
                 } else {
                     const allIndices = Array.from({length: D.ra.length}, (_, i) => i);
-                    
                     let colorValues, colorLabel, colorscale;
                     
                     if (currentColorMode === 'zphot') {
                         colorValues = D.zphot;
-                        // colorValues = D.zphot.map(z => Math.log10(z + 1));
                         colorLabel = 'Photo-z';
                         colorscale = 'Hot';
                     } else if (currentColorMode === 'ref_flux') {
@@ -361,17 +396,14 @@
                             size: 4, 
                             color: colorValues,
                             colorscale: colorscale,
-                            colorbar: {
-                                title: colorLabel,
-                                len: 0.7,
-                                thickness: 15
-                            },
+                            colorbar: { title: colorLabel, len: 0.7, thickness: 15 },
                             line: {color: 'rgba(0,0,0,0.1)', width: 0.5}
                         },
                         text: allIndices.map(i => `ID: ${D.ids[i]}`),
                         hovertemplate: '<b>%{text}</b><extra></extra>',
                         showlegend: false
                     });
+
                 }
                 
                 traces.push({
@@ -434,7 +466,7 @@
             // =====================
             // Barro-style Color–Color Diagram
             // =====================
-            const FLUX_COLS = ["FF814W","FF115W","FF150W","FF200W","FF277W","FF356W","FF410M","FF444W"]; // must match D.fluxes order
+            const FLUX_COLS = ["FF814W","FF115W","FF150W","FF200W","FF277W","FF356W","FF410M","FF444W"]; 
             const band2i = Object.fromEntries(FLUX_COLS.map((b,i)=>[b,i]));
             const i115 = band2i["FF115W"], i200 = band2i["FF200W"], i444 = band2i["FF444W"];
 
@@ -463,13 +495,15 @@
                     name: 'All'
                 });
 
-                // overlay catalogs (skip BLAGN)
+                // overlay catalogs (skip BLAGN and Spectroscopic here)
                 const catalog_indices = D.catalog_indices || {};
                 const catalog_colors  = D.catalog_colors  || {};
                 const catalog_labels  = D.catalog_labels  || {};
 
+                // 1. Cataloghi Standard
                 for (const [name, idx_list] of Object.entries(catalog_indices)){
                     if(name === 'BLAGN') continue;
+                    if(name === 'Spectroscopic') continue; // Salta Spectroscopic per ora
                     if(!idx_list || idx_list.length === 0) continue;
                     const x = [], y = [], text = [];
                     for(const idx of idx_list){
@@ -486,6 +520,35 @@
                         text,
                         hovertemplate: '<b>%{text}</b><extra></extra>'
                     });
+                }
+
+                // 2. Spectroscopic Overlay
+                if(catalog_indices['Spectroscopic'] && catalog_indices['Spectroscopic'].length > 0) {
+                    const idx_list = catalog_indices['Spectroscopic'];
+                    const x = [], y = [], text = [];
+                    for(const idx of idx_list){
+                        if(barroX[idx] === null || barroY[idx] === null) continue;
+                        x.push(barroX[idx]); y.push(barroY[idx]);
+                        text.push(`ID: ${D.ids[idx]} (Spec)`);
+                    }
+                    if(x.length > 0) {
+                        traces.push({
+                            x, y,
+                            mode: 'markers', type: 'scattergl',
+                            marker: { 
+                                symbol: 'circle', 
+                                size: 6, 
+                                color: 'rgba(0,0,0,0)',      // Trasparente
+                                line: {
+                                    color: 'purple',
+                                    width: 0.5
+                                }
+                            },
+                            name: catalog_labels['Spectroscopic'] || 'Spectroscopic',
+                            text,
+                            hovertemplate: '<b>%{text}</b><extra></extra>'
+                        });
+                    }
                 }
 
                 // wedge lines (as scatter line traces)
@@ -571,8 +634,8 @@
                 if (typeof idx === 'undefined') return;
                 
                 // Aggiorna la selezione globale
-                currentSelectionIndices = [idx]; // <--- AGGIUNTO
-                updateDownloadButtonState();     // <--- AGGIUNTO
+                currentSelectionIndices = [idx]; 
+                updateDownloadButtonState();     
                 updateBarroSelection(currentSelectionIndices);
                 
                 updateSingleObject(idx);
@@ -581,8 +644,8 @@
             umapDiv.on('plotly_selected', function(data){
                 if(!data || !data.points || data.points.length === 0) {
                     // Selezione vuota / Deselezione
-                    currentSelectionIndices = []; // <--- AGGIUNTO
-                    updateDownloadButtonState();  // <--- AGGIUNTO
+                    currentSelectionIndices = []; 
+                    updateDownloadButtonState();  
                     updateBarroSelection(currentSelectionIndices);
                     
                     Plotly.react('sed-plot', [], sedLayout);
@@ -593,8 +656,8 @@
                 const indices = [...new Set(data.points.map(pt => pt.customdata).filter(i => i !== undefined))];
                 
                 // Aggiorna la selezione globale
-                currentSelectionIndices = indices; // <--- AGGIUNTO
-                updateDownloadButtonState();       // <--- AGGIUNTO
+                currentSelectionIndices = indices; 
+                updateDownloadButtonState();       
                 updateBarroSelection(currentSelectionIndices);
 
                 if (indices.length === 1) updateSingleObject(indices[0]);
