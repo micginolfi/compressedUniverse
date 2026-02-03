@@ -83,17 +83,102 @@
         
         #error-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 9999; padding: 40px; color: #d62728; font-family: monospace; white-space: pre-wrap; font-size: 16px; border: 5px solid #d62728;}
         #loading-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,1); z-index: 5000; display: flex; justify-content: center; align-items: center; font-size: 1.5em; color: #333; flex-direction: column;}
+        
+        /* Dataset selection overlay */
+        #dataset-selection-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+        
+        #dataset-selection-overlay h1 {
+            color: white;
+            font-size: 2.5em;
+            margin-bottom: 50px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .dataset-container {
+            display: flex;
+            gap: 40px;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .dataset-box {
+            width: 350px;
+            height: 200px;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .dataset-box:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.4);
+        }
+        
+        .dataset-box h2 {
+            color: #333;
+            font-size: 1.8em;
+            margin: 0;
+            line-height: 1.4;
+        }
     </style>
 </head>
 <body>
 
+    <!-- Dataset Selection Overlay -->
+    <div id="dataset-selection-overlay">
+        <h1>Choose the dataset to explore</h1>
+        <div class="dataset-container">
+            <div class="dataset-box" onclick="selectDataset('benchmark')">
+                <h2>Benchmark Dataset</h2>
+            </div>
+            <div class="dataset-box" onclick="selectDataset('test')">
+                <h2>Test Dataset<br><span style="font-size: 0.6em; color: #666;">→ removed sources with possible SED contamination (i.e., companions &lt; 0.5")</span></h2>
+            </div>
+        </div>
+    </div>
+
     <div id="error-overlay"></div>
     <div id="loading-overlay">
         <div>⏳ Loading & Decompressing Data...</div>
-        <div style="font-size:0.6em; color:#666; margin-top:10px">Fetching galaxy_data.js.gz</div>
+        <div id="loading-filename" style="font-size:0.6em; color:#666; margin-top:10px">Fetching galaxy_data.js.gz</div>
     </div>
 
     <script>
+        let selectedDataFile = null;
+
+        function selectDataset(type) {
+            if (type === 'benchmark') {
+                selectedDataFile = 'galaxy_data_benchmark.js.gz';
+            } else if (type === 'test') {
+                selectedDataFile = 'galaxy_data_test.js.gz';
+            }
+            
+            document.getElementById('dataset-selection-overlay').style.display = 'none';
+            document.getElementById('loading-overlay').style.display = 'flex';
+            document.getElementById('loading-filename').textContent = `Fetching ${selectedDataFile}`;
+            
+            loadData();
+        }
+
         function showError(msg) {
             document.getElementById('loading-overlay').style.display = 'none';
             const el = document.getElementById('error-overlay');
@@ -104,7 +189,7 @@
 
         async function loadData() {
             try {
-                const response = await fetch('galaxy_data.js.gz');
+                const response = await fetch(selectedDataFile);
                 if (!response.ok) throw new Error(`HTTP Error ${response.status}: ${response.statusText}`);
 
                 const ds = new DecompressionStream('gzip');
@@ -125,11 +210,9 @@
                 if (window.location.protocol === 'file:') {
                     extra = "\n\n⚠️ NOTE: You are running via 'file://'.\nRun a local server: python -m http.server";
                 }
-                showError("Failed to load galaxy_data.js.gz:\n" + err.message + extra);
+                showError("Failed to load " + selectedDataFile + ":\n" + err.message + extra);
             }
         }
-
-        loadData();
     </script>
 
     <div id="controls">
