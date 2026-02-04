@@ -91,7 +91,8 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            /* MODIFICA: Sfondo bianco */
+            background: white;
             z-index: 10000;
             display: flex;
             flex-direction: column;
@@ -100,10 +101,12 @@
         }
         
         #dataset-selection-overlay h1 {
-            color: white;
+            /* MODIFICA: Colore testo scuro per sfondo bianco */
+            color: #333;
             font-size: 2.5em;
             margin-bottom: 50px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            /* Rimosso text-shadow pesante per leggibilità su bianco, o ridotto */
+            text-shadow: none;
         }
         
         .dataset-container {
@@ -115,10 +118,12 @@
         
         .dataset-box {
             width: 350px;
-            height: 200px;
+            height: 250px; /* Aumentato leggermente per testo lungo */
             background: white;
             border-radius: 12px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            /* Ombra più definita per contrasto su sfondo bianco */
+            box-shadow: 0 10px 30px rgba(0,0,0,0.15);
+            border: 1px solid #eee;
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -130,12 +135,13 @@
         
         .dataset-box:hover {
             transform: translateY(-10px);
-            box-shadow: 0 15px 40px rgba(0,0,0,0.4);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.25);
+            border-color: #007bff;
         }
         
         .dataset-box h2 {
             color: #333;
-            font-size: 1.8em;
+            font-size: 1.5em;
             margin: 0;
             line-height: 1.4;
         }
@@ -147,11 +153,31 @@
     <div id="dataset-selection-overlay">
         <h1>Choose the dataset to explore</h1>
         <div class="dataset-container">
-            <div class="dataset-box" onclick="selectDataset('benchmark')">
-                <h2>Benchmark Dataset</h2>
+            <!-- Box 1 -->
+            <div class="dataset-box" onclick="selectDataset('withcontaminants')">
+                <h2>Full Dataset<br>
+                    <span style="font-size: 0.6em; color: #666; font-weight: normal;">
+                        simultaneous &gt;2sigma detections
+                    </span>
+                </h2>
             </div>
-            <div class="dataset-box" onclick="selectDataset('test')">
-                <h2>Test Dataset<br><span style="font-size: 0.6em; color: #666;">→ removed sources with possible SED contamination (i.e., companions &lt; 0.5")</span></h2>
+            
+            <!-- Box 2 -->
+            <div class="dataset-box" onclick="selectDataset('nocontaminants')">
+                <h2>Dataset with no contaminants<br>
+                    <span style="font-size: 0.6em; color: #666; font-weight: normal;">
+                        simultaneous &gt;2sigma detections, removed sources with possible SED contamination (i.e., companions &lt; 0.5")
+                    </span>
+                </h2>
+            </div>
+
+            <!-- Box 3 -->
+            <div class="dataset-box" onclick="selectDataset('onlymorphology')">
+                <h2>Full dataset with no contaminants and no morphology<br>
+                    <span style="font-size: 0.5em; color: #666; font-weight: normal;">
+                        simultaneous &gt;2sigma detections, removed sources with possible SED contamination (i.e., companions &lt; 0.5"), removed stellarity and r50 as input features (only colours, 0.1 * scaling flux and photo-z)
+                    </span>
+                </h2>
             </div>
         </div>
     </div>
@@ -166,10 +192,13 @@
         let selectedDataFile = null;
 
         function selectDataset(type) {
-            if (type === 'benchmark') {
-                selectedDataFile = 'galaxy_data_benchmark.js.gz';
-            } else if (type === 'test') {
-                selectedDataFile = 'galaxy_data_test.js.gz';
+            // MODIFICA: Logica selezione file aggiornata
+            if (type === 'withcontaminants') {
+                selectedDataFile = 'galaxy_data_withcontaminants.js.gz';
+            } else if (type === 'nocontaminants') {
+                selectedDataFile = 'galaxy_data_nocontaminants.js.gz';
+            } else if (type === 'onlymorphology') {
+                selectedDataFile = 'galaxy_data_onlymorphology.js.gz';
             }
             
             document.getElementById('dataset-selection-overlay').style.display = 'none';
@@ -961,8 +990,6 @@
                         const xb = restBinsLog[b];
                         if (xb < xmin || xb > xmax) {
                             row[b] = null
-
-                            row[b] = null;
                             continue;
                         }
 
@@ -1039,7 +1066,7 @@
                 Plotly.react('histogram-plot', [{
                     x: restBins,
                     y: binCounts,
-                    type: 'line', 
+                    type: 'lines', 
                     marker: { color: '#1f77b4', opacity: 0.7 }
                 }], histLayoutUpdate);
             }
