@@ -13,7 +13,22 @@
         #right-panel { flex: 2; display: flex; flex-direction: column; min-width: 600px; }
         
         #sed-container { display: flex; flex: 1; }
-        #sed-observer { flex: 1; border-right: 1px solid #ccc; }
+        #sed-observer { flex: 1; border-right: 1px solid #ccc; position: relative; }
+
+        /* ── z_phot inset (observer frame, lasso selection only) ── */
+        #zphot-inset {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            width: 220px;
+            height: 155px;
+            background: rgba(255,255,255,0.93);
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.18);
+            display: none;
+            z-index: 100;
+        }
         #sed-restframe { flex: 1; display: flex; flex-direction: column; }
         #histogram-panel { height: 120px; border-bottom: 1px solid #ccc; background: #fafafa; }
         #sed-rest-plot { flex: 1; }
@@ -153,29 +168,31 @@
     <div id="dataset-selection-overlay">
         <h1>Choose the dataset to explore</h1>
         <div class="dataset-container">
-            <!-- Box 1 -->
-            <div class="dataset-box" onclick="selectDataset('withcontaminants')">
+            <!-- Box 1 (Disattivato / Placeholder) -->
+            <div class="dataset-box" style="opacity: 0.5; cursor: not-allowed; pointer-events: none;" title="Coming Soon">
                 <h2>Full Dataset<br>
                     <span style="font-size: 0.6em; color: #666; font-weight: normal;">
-                        simultaneous &gt;2sigma detections
+                        simultaneous &gt;2sigma detections<br>
+                        <i>(Currently Unavailable)</i>
                     </span>
                 </h2>
             </div>
             
-            <!-- Box 2 -->
-            <div class="dataset-box" onclick="selectDataset('nocontaminants')">
+            <!-- Box 2 (Disattivato / Placeholder) -->
+            <div class="dataset-box" style="opacity: 0.5; cursor: not-allowed; pointer-events: none;" title="Coming Soon">
                 <h2>Dataset with no contaminants<br>
                     <span style="font-size: 0.6em; color: #666; font-weight: normal;">
-                        simultaneous &gt;2sigma detections, removed sources with possible SED contamination (i.e., companions &lt; 0.5")
+                        simultaneous &gt;2sigma detections, removed sources with possible SED contamination (i.e., companions &lt; 0.5")<br>
+                        <i>(Currently Unavailable)</i>
                     </span>
                 </h2>
             </div>
 
-            <!-- Box 3 -->
-            <div class="dataset-box" onclick="selectDataset('onlymorphology')">
-                <h2>Full dataset with no contaminants and no morphology<br>
+            <!-- Box 3 (ATTIVO) -->
+            <div class="dataset-box" onclick="selectDataset('withdropout')">
+                <h2>Dataset with no contaminants and possible non detections at f814w<br>
                     <span style="font-size: 0.5em; color: #666; font-weight: normal;">
-                        simultaneous &gt;2sigma detections, removed sources with possible SED contamination (i.e., companions &lt; 0.5"), removed stellarity and r50 as input features (only colours, 0.1 * scaling flux and photo-z)
+                        with dropout (included non detections at f814w with floor value) 
                     </span>
                 </h2>
             </div>
@@ -197,8 +214,8 @@
                 selectedDataFile = 'galaxy_data_withcontaminants.js.gz';
             } else if (type === 'nocontaminants') {
                 selectedDataFile = 'galaxy_data_nocontaminants.js.gz';
-            } else if (type === 'onlymorphology') {
-                selectedDataFile = 'galaxy_data_onlymorphology.js.gz';
+            } else if (type === 'withdropout') {
+                selectedDataFile = 'galaxy_data_withdropout.js.gz';
             }
             
             document.getElementById('dataset-selection-overlay').style.display = 'none';
@@ -271,6 +288,8 @@
             <div id="sed-container">
                 <div id="sed-observer">
                     <div id="sed-plot" class="plot-div"></div>
+                    <!-- z_phot distribution inset (visible on lasso/box multi-selection) -->
+                    <div id="zphot-inset"></div>
                 </div>
                 <div id="sed-restframe">
                     <div id="histogram-panel">
@@ -574,6 +593,11 @@
             Plotly.newPlot('sed-plot', [], sedLayout, {responsive: true});
             Plotly.newPlot('sed-rest-plot', [], sedRestLayout, {responsive: true});
             Plotly.newPlot('histogram-plot', [], histLayout, {responsive: true});
+            Plotly.newPlot('zphot-inset', [], {
+                margin: { t: 24, l: 38, r: 6, b: 30 },
+                paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(255,255,255,0)',
+                showlegend: false
+            }, {responsive: true, displayModeBar: false});
 
             // =====================
             // Barro-style Color–Color Diagram
@@ -854,6 +878,9 @@
                 }], sedRestLayout);
 
                 Plotly.react('histogram-plot', [], histLayout);
+
+                // hide z_phot inset for single-object view
+                document.getElementById('zphot-inset').style.display = 'none';
             }
 
             function updateStackedSed(indices) {
@@ -911,6 +938,36 @@
                     { x: D.wavelengths, y: p84sObs, mode: 'lines', line: {width: 0}, fill: 'tonexty', fillcolor: 'rgba(214, 39, 40, 0.2)', name: '16-84th Perc.', hoverinfo: 'none' },
                     { x: D.wavelengths, y: mediansObs, mode: 'lines+markers', line: {color: '#d62728', width: 2}, name: `Median` }
                 ], sedLayout);
+
+                // ── z_phot inset ──────────────────────────────────────────
+                {
+                    const zphotVals = indices.map(i => D.zphot[i]).filter(z => isFinite(z) && z > -0.5);
+                    const insetEl = document.getElementById('zphot-inset');
+                    if (zphotVals.length > 0) {
+                        insetEl.style.display = 'block';
+                        const nZBins = Math.max(8, Math.min(25, Math.round(zphotVals.length / 4)));
+                        Plotly.react('zphot-inset', [{
+                            x: zphotVals,
+                            type: 'histogram',
+                            nbinsx: nZBins,
+                            marker: {
+                                color: 'rgba(214,39,40,0.60)',
+                                line: { color: 'rgba(180,20,20,0.9)', width: 1 }
+                            }
+                        }], {
+                            margin: { t: 24, l: 38, r: 6, b: 30 },
+                            title: { text: `z<sub>phot</sub>  N=${zphotVals.length}`, font: { size: 10 }, x: 0.5 },
+                            xaxis: { title: { text: 'z', font: { size: 9 } }, tickfont: { size: 8 } },
+                            yaxis: { title: { text: 'N', font: { size: 9 } }, tickfont: { size: 8 } },
+                            paper_bgcolor: 'rgba(255,255,255,0)',
+                            plot_bgcolor:  'rgba(255,255,255,0)',
+                            showlegend: false
+                        });
+                    } else {
+                        insetEl.style.display = 'none';
+                    }
+                }
+                // ─────────────────────────────────────────────────────────
 
                 function quantileSorted(sortedArr, q) {
                     if (sortedArr.length === 0) return null;
