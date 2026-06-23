@@ -168,27 +168,16 @@
     <div id="dataset-selection-overlay">
         <h1>Choose the dataset to explore</h1>
         <div class="dataset-container">
-            <!-- Box 1 (Disattivato / Placeholder) -->
-            <div class="dataset-box" style="opacity: 0.5; cursor: not-allowed; pointer-events: none;" title="Coming Soon">
-                <h2>Full Dataset<br>
+            <!-- Box 1 (ATTIVO) -->
+            <div class="dataset-box" onclick="selectDataset('withdropout_no_morph')">
+                <h2>Dataset with no morphology<br>
                     <span style="font-size: 0.6em; color: #666; font-weight: normal;">
-                        simultaneous &gt;2sigma detections<br>
-                        <i>(Currently Unavailable)</i>
-                    </span>
-                </h2>
-            </div>
-            
-            <!-- Box 2 (Disattivato / Placeholder) -->
-            <div class="dataset-box" style="opacity: 0.5; cursor: not-allowed; pointer-events: none;" title="Coming Soon">
-                <h2>Dataset with no contaminants<br>
-                    <span style="font-size: 0.6em; color: #666; font-weight: normal;">
-                        simultaneous &gt;2sigma detections, removed sources with possible SED contamination (i.e., companions &lt; 0.5")<br>
-                        <i>(Currently Unavailable)</i>
+                        dataset with no morphology
                     </span>
                 </h2>
             </div>
 
-            <!-- Box 3 (ATTIVO) -->
+            <!-- Box 2 (ATTIVO) -->
             <div class="dataset-box" onclick="selectDataset('withdropout')">
                 <h2>Dataset with no contaminants and possible non detections at f814w<br>
                     <span style="font-size: 0.5em; color: #666; font-weight: normal;">
@@ -216,6 +205,8 @@
                 selectedDataFile = 'galaxy_data_nocontaminants.js.gz';
             } else if (type === 'withdropout') {
                 selectedDataFile = 'galaxy_data_withdropout.js.gz';
+            } else if (type === 'withdropout_no_morph') {
+                selectedDataFile = 'galaxy_data_withdropout_no_morph.js.gz';
             }
             
             document.getElementById('dataset-selection-overlay').style.display = 'none';
@@ -763,11 +754,95 @@
             function getMultiMarkerIdx() {
                 return umapDiv.data.length - 1;
             }
-            
+
+            function clearUmapSelectionVisuals() {
+                // Clear Plotly lasso/box selection state and remove the drawn selection outline.
+                try {
+                    const traceIndices = Array.from({length: umapDiv.data.length}, (_, i) => i);
+                    Plotly.restyle(umapDiv, {selectedpoints: traceIndices.map(() => null)}, traceIndices);
+                } catch (e) {}
+
+                try {
+                    Plotly.relayout(umapDiv, {selections: []});
+                } catch (e) {}
+
+                try {
+                    const selectionLayer = umapDiv.querySelector('.selectionlayer');
+                    if (selectionLayer) selectionLayer.innerHTML = '';
+                } catch (e) {}
+            }
+
+            function resetToInitialSelectionView() {
+                currentSelectionIndices = [];
+                updateDownloadButtonState();
+                updateBarroSelection(currentSelectionIndices);
+
+                const singleIdx = getSingleMarkerIdx();
+                const multiIdx = getMultiMarkerIdx();
+                Plotly.restyle('umap-plot', {x: [[]], y: [[]]}, [singleIdx]);
+                Plotly.restyle('umap-plot', {x: [[]], y: [[]]}, [multiIdx]);
+
+                sedLayout.title = 'SED Viewer (Observer Frame)';
+                sedRestLayout.title = 'SED Rest-Frame';
+                histLayout.title.text = 'SED count per bin';
+
+                Plotly.react('sed-plot', [], sedLayout);
+                Plotly.react('sed-rest-plot', [], sedRestLayout);
+                Plotly.react('histogram-plot', [], histLayout);
+
+                document.getElementById('zphot-inset').style.display = 'none';
+                document.getElementById('browser-header').innerHTML = 'Waiting for selection...';
+                document.getElementById('dja-frame').src = 'about:blank';
+
+                clearUmapSelectionVisuals();
+            }
+
+            let lastPlotlyPointClickTime = 0;
+            let suppressBackgroundResetUntil = 0;
+            let pointerStart = null;
+            let pointerMoved = false;
+
+            umapDiv.addEventListener('pointerdown', function(evt) {
+                pointerStart = {x: evt.clientX, y: evt.clientY};
+                pointerMoved = false;
+            });
+
+            umapDiv.addEventListener('pointermove', function(evt) {
+                if (!pointerStart) return;
+                if (Math.abs(evt.clientX - pointerStart.x) > 5 || Math.abs(evt.clientY - pointerStart.y) > 5) {
+                    pointerMoved = true;
+                }
+            });
+
+            umapDiv.addEventListener('pointerup', function() {
+                setTimeout(function() {
+                    pointerStart = null;
+                    pointerMoved = false;
+                }, 150);
+            });
+
+            umapDiv.addEventListener('click', function(evt) {
+                // Do not reset when the user interacts with Plotly controls or the legend.
+                if (evt.target.closest && evt.target.closest('.modebar, .legend, .legendtoggle')) return;
+
+                setTimeout(function() {
+                    const now = Date.now();
+                    if (pointerMoved) return;
+                    if (now - lastPlotlyPointClickTime < 250) return;
+                    if (now < suppressBackgroundResetUntil) return;
+
+                    // Click on the UMAP background: clear any active lasso/box selection.
+                    resetToInitialSelectionView();
+                }, 30);
+            });
+
             umapDiv.on('plotly_click', function(data){
                 if(!data.points || data.points.length === 0) return;
                 const idx = data.points[0].customdata;
                 if (typeof idx === 'undefined') return;
+
+                lastPlotlyPointClickTime = Date.now();
+                clearUmapSelectionVisuals();
                 
                 // Aggiorna la selezione globale
                 currentSelectionIndices = [idx]; 
@@ -778,15 +853,11 @@
             });
 
             umapDiv.on('plotly_selected', function(data){
+                suppressBackgroundResetUntil = Date.now() + 350;
+
                 if(!data || !data.points || data.points.length === 0) {
                     // Selezione vuota / Deselezione
-                    currentSelectionIndices = []; 
-                    updateDownloadButtonState();  
-                    updateBarroSelection(currentSelectionIndices);
-                    
-                    Plotly.react('sed-plot', [], sedLayout);
-                    Plotly.react('sed-rest-plot', [], sedRestLayout);
-                    Plotly.react('histogram-plot', [], histLayout);
+                    resetToInitialSelectionView();
                     return;
                 }
                 const indices = [...new Set(data.points.map(pt => pt.customdata).filter(i => i !== undefined))];
@@ -796,7 +867,10 @@
                 updateDownloadButtonState();       
                 updateBarroSelection(currentSelectionIndices);
 
-                if (indices.length === 1) updateSingleObject(indices[0]);
+                if (indices.length === 1) {
+                    clearUmapSelectionVisuals();
+                    updateSingleObject(indices[0]);
+                }
                 else if (indices.length > 1) updateStackedSed(indices);
             });
 
