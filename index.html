@@ -111,8 +111,11 @@
             z-index: 10000;
             display: flex;
             flex-direction: column;
-            justify-content: center;
+            justify-content: flex-start;
             align-items: center;
+            overflow-y: auto;
+            padding: 6vh 20px 40px;
+            box-sizing: border-box;
         }
         
         #dataset-selection-overlay h1 {
@@ -160,6 +163,28 @@
             margin: 0;
             line-height: 1.4;
         }
+        .doc-box {
+            max-width: 760px;
+            margin: 34px 20px 0;
+            padding: 20px 26px;
+            background: #fafafa;
+            border: 1px solid #eee;
+            border-radius: 12px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.06);
+            color: #333;
+            font-size: 0.95em;
+            line-height: 1.5;
+            text-align: left;
+        }
+        .doc-box h3 {
+            margin: 0 0 10px;
+            font-size: 1.15em;
+            color: #222;
+        }
+        .doc-box p { margin: 0 0 10px; }
+        .doc-box ul { margin: 0 0 6px; padding-left: 20px; }
+        .doc-box li { margin-bottom: 6px; }
+        .doc-box .doc-note { color: #666; font-size: 0.9em; margin-bottom: 0; }
     </style>
 </head>
 <body>
@@ -181,10 +206,40 @@
             <div class="dataset-box" onclick="selectDataset('withdropout')">
                 <h2>Dataset with no contaminants and possible non detections at f814w<br>
                     <span style="font-size: 0.5em; color: #666; font-weight: normal;">
-                        with dropout (included non detections at f814w with floor value) 
+                        with dropout (included non detections at f814w with floor value)
                     </span>
                 </h2>
             </div>
+        </div>
+
+        <!-- Short usage documentation -->
+        <div class="doc-box">
+            <h3>How to use this viewer</h3>
+            <p>
+                Each point is a JWST source placed on the UMAP map by the similarity of its
+                colours, morphology and photometric redshift. Pick a dataset above to start;
+                once it loads you can:
+            </p>
+            <ul>
+                <li><b>Inspect one object</b> &mdash; <b>click</b> a point to show its
+                    observed- and rest-frame SED and its DJA image cutout on the right.</li>
+                <li><b>Stack a group</b> &mdash; use the <b>Box</b> or <b>Lasso</b> tool
+                    (top-right toolbar of the plot) to drag a region around several points;
+                    the panel then shows their <b>median stacked SED</b> and redshift
+                    distribution.</li>
+                <li><b>Show / hide samples</b> &mdash; <b>click a name in the legend</b> to
+                    toggle that catalogue on or off; <b>double-click</b> a name to isolate it
+                    (show only that one). This changes the overlay, not the underlying map.</li>
+                <li><b>Recolour the map</b> &mdash; use the <b>Color by</b> buttons to switch
+                    between catalogues, photo-<i>z</i>, flux scale and stellarity.</li>
+                <li><b>Download a selection</b> &mdash; after drawing a Box/Lasso region, the
+                    <b>Download CSV</b> button (top bar) saves the selected sources, with
+                    coordinates, redshift and eight-band photometry, for your own follow-up.</li>
+                <li><b>Clear</b> &mdash; click on empty map background to reset the view.</li>
+            </ul>
+            <p class="doc-note">
+                Tip: pan and zoom with the mouse; the toolbar's home icon resets the view.
+            </p>
         </div>
     </div>
 
@@ -314,7 +369,19 @@
         try {
             if (typeof window.GALAXY_DATA === 'undefined') throw new Error("GALAXY_DATA missing");
             const D = window.GALAXY_DATA;
-            
+
+            // --- Catalogue overlay adjustments (applied to whichever dataset loads) ---
+            // Drop the AGN (Cozzi+26) sample entirely, and correct the brown-dwarf label.
+            (function fixCatalogs() {
+                for (const map of [D.catalog_indices, D.catalog_labels, D.catalog_colors]) {
+                    if (map && 'Cozzi26' in map) delete map['Cozzi26'];
+                }
+                if (D.catalog_labels && 'BD' in D.catalog_labels) {
+                    D.catalog_labels['BD'] = 'BD (Hainline+25,26)';
+                }
+            })();
+
+
             let currentSelectionIndices = [];
             const downloadBtn = document.getElementById('download-btn');
 
@@ -797,20 +864,32 @@
                 clearUmapSelectionVisuals();
             }
 
-            let lastPlotlyPointClickTime = 0;
             let suppressBackgroundResetUntil = 0;
             let pointerStart = null;
             let pointerMoved = false;
+            // Timestamp of the last real box/lasso drag over the map. Used to tell
+            // a genuine empty selection (user dragged over empty space) apart from a
+            // spurious empty `plotly_selected` that scattergl emits after a point
+            // click or a layout reflow (e.g. the DJA cutout iframe loading); only
+            // the former should clear the view back to "Waiting...".
+            let lastDragEndTime = 0;
+            // Whether the current pointer gesture landed on a data point (plotly_click
+            // fired). Reset on pointerdown, set on plotly_click. The background-click
+            // reset consults this flag rather than a timestamp, so it stays correct
+            // even when its timer fires very late under main-thread load.
+            let pointClickedThisGesture = false;
 
             umapDiv.addEventListener('pointerdown', function(evt) {
                 pointerStart = {x: evt.clientX, y: evt.clientY};
                 pointerMoved = false;
+                pointClickedThisGesture = false;   // new gesture; assume background until plotly_click says otherwise
             });
 
             umapDiv.addEventListener('pointermove', function(evt) {
                 if (!pointerStart) return;
                 if (Math.abs(evt.clientX - pointerStart.x) > 5 || Math.abs(evt.clientY - pointerStart.y) > 5) {
                     pointerMoved = true;
+                    lastDragEndTime = Date.now();   // keep fresh throughout the drag
                 }
             });
 
@@ -825,15 +904,19 @@
                 // Do not reset when the user interacts with Plotly controls or the legend.
                 if (evt.target.closest && evt.target.closest('.modebar, .legend, .legendtoggle')) return;
 
+                // Decide, shortly after the click settles, whether it was on empty
+                // background. We key off pointClickedThisGesture (set by plotly_click
+                // for this same gesture) rather than a timestamp, so the decision is
+                // correct even when this timer fires very late under main-thread load
+                // — the cause of the object flashing then vanishing.
                 setTimeout(function() {
-                    const now = Date.now();
                     if (pointerMoved) return;
-                    if (now - lastPlotlyPointClickTime < 250) return;
-                    if (now < suppressBackgroundResetUntil) return;
+                    if (pointClickedThisGesture) return;   // this gesture hit a data point -> keep it
+                    if (Date.now() < suppressBackgroundResetUntil) return;
 
-                    // Click on the UMAP background: clear any active lasso/box selection.
+                    // Genuine click on empty UMAP background: clear the current view.
                     resetToInitialSelectionView();
-                }, 30);
+                }, 200);
             });
 
             umapDiv.on('plotly_click', function(data){
@@ -841,14 +924,14 @@
                 const idx = data.points[0].customdata;
                 if (typeof idx === 'undefined') return;
 
-                lastPlotlyPointClickTime = Date.now();
+                pointClickedThisGesture = true;   // this gesture landed on a point
                 clearUmapSelectionVisuals();
-                
+
                 // Aggiorna la selezione globale
-                currentSelectionIndices = [idx]; 
-                updateDownloadButtonState();     
+                currentSelectionIndices = [idx];
+                updateDownloadButtonState();
                 updateBarroSelection(currentSelectionIndices);
-                
+
                 updateSingleObject(idx);
             });
 
@@ -856,15 +939,21 @@
                 suppressBackgroundResetUntil = Date.now() + 350;
 
                 if(!data || !data.points || data.points.length === 0) {
-                    // Selezione vuota / Deselezione
-                    resetToInitialSelectionView();
+                    // Empty selection. Only treat it as a real deselection when it
+                    // follows an actual box/lasso drag. scattergl also emits empty
+                    // selections spuriously after a point click and after layout
+                    // reflows (the DJA cutout iframe loading resizes the responsive
+                    // plot); those have no recent drag behind them and must not wipe
+                    // the current view. (Clicking empty background still clears via
+                    // the background-click listener above.)
+                    if (Date.now() - lastDragEndTime < 500) resetToInitialSelectionView();
                     return;
                 }
                 const indices = [...new Set(data.points.map(pt => pt.customdata).filter(i => i !== undefined))];
-                
+
                 // Aggiorna la selezione globale
-                currentSelectionIndices = indices; 
-                updateDownloadButtonState();       
+                currentSelectionIndices = indices;
+                updateDownloadButtonState();
                 updateBarroSelection(currentSelectionIndices);
 
                 if (indices.length === 1) {
