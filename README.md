@@ -4,7 +4,7 @@ Companion material for **Ginolfi et al.**, *Unsupervised selection and character
 
 1. an **interactive web viewer** of the UMAP manifold of ~242,000 JWST sources, and
 2. a **machine-readable catalogue** of the new photometric LRD candidates
-   (`lrd_candidates.csv`).
+   (`lrd_candidates.csv`), *to be released publicly upon acceptance*.
 
 Both are derived from the ASTRODEEP-JWST photometric catalogue
 ([Merlin et al. 2024](https://ui.adsabs.harvard.edu/abs/2024A%26A...691A.240M/abstract)),
