@@ -81,6 +81,8 @@
         #mag-cut input[type=range] { width: 220px; }
         #mag-cut input[type=number] { width: 58px; font-size: 12px; }
         #mag-cut-count { color: #ddd; font-size: 12px; min-width: 150px; }
+        #cosmos-btn { padding: 3px 10px; background: #555; color: white; border: 1px solid #777; border-radius: 4px; cursor: pointer; font-size: 12px; }
+        #cosmos-btn.active { background: #2e7dd7; border-color: #5aa0ef; }
         #mag-cut-reset { padding: 2px 8px; background: #666; color: white; border: 1px solid #777; border-radius: 4px; cursor: pointer; font-size: 11px; }
         
         #browser-header { padding: 10px; background: #f8f9fa; border-bottom: 1px solid #ddd; font-size: 14px; font-family: sans-serif; line-height: 1.5; }
@@ -337,6 +339,7 @@
             <input type="number" id="mag-cut-value" step="0.1">
             <span>mag</span>
             <button id="mag-cut-reset">show all</button>
+            <button id="cosmos-btn" title="Show only PRIMER-COSMOS sources. Combines with the H cut and applies to the same panels, selections and download.">COSMOS only</button>
             <span id="mag-cut-count"></span>
         </div>
     </div>
@@ -406,8 +409,10 @@
             const MAG_MIN = Math.floor(finiteMagH.reduce((a, b) => Math.min(a, b), Infinity) * 10) / 10;
             const MAG_MAX = Math.ceil(finiteMagH.reduce((a, b) => Math.max(a, b), -Infinity) * 10) / 10;
             let magCut = MAG_MAX;          // default: cut off, everything shown
-            const cutActive = () => magCut < MAG_MAX;
-            const isVisible = i => !cutActive() || magH[i] <= magCut;
+            // --- COSMOS-only toggle (PRIMER-COSMOS, survey tag PRIMERCO); combines with the H cut ---
+            let cosmosOnly = false;
+            const cutActive = () => magCut < MAG_MAX || cosmosOnly;
+            const isVisible = i => (magCut >= MAG_MAX || magH[i] <= magCut) && (!cosmosOnly || D.survey[i] === 'PRIMERCO');
             const visibleOf = arr => (cutActive() ? arr.filter(isVisible) : arr);
 
 
@@ -1003,15 +1008,23 @@
             magValue.min = MAG_MIN; magValue.max = MAG_MAX; magValue.value = MAG_MAX.toFixed(1);
 
             function countVisible(cut) {
-                if (cut >= MAG_MAX) return D.ra.length;
-                let n = 0; for (let i = 0; i < magH.length; i++) if (magH[i] <= cut) n++;
+                if (cut >= MAG_MAX && !cosmosOnly) return D.ra.length;
+                let n = 0;
+                for (let i = 0; i < magH.length; i++)
+                    if ((cut >= MAG_MAX || magH[i] <= cut) && (!cosmosOnly || D.survey[i] === 'PRIMERCO')) n++;
                 return n;
             }
             function updateMagLabel(cut) {
                 const n = countVisible(cut);
-                magCount.textContent = cut >= MAG_MAX ? `all ${n.toLocaleString()} sources`
+                magCount.textContent = (cut >= MAG_MAX && !cosmosOnly) ? `all ${n.toLocaleString()} sources`
                                                       : `${n.toLocaleString()} of ${D.ra.length.toLocaleString()} shown`;
             }
+            const cosmosBtn = document.getElementById('cosmos-btn');
+            cosmosBtn.addEventListener('click', () => {
+                cosmosOnly = !cosmosOnly;
+                cosmosBtn.classList.toggle('active', cosmosOnly);
+                applyMagCut(magCut);
+            });
             function applyMagCut(cut) {
                 magCut = Math.min(Math.max(cut, MAG_MIN), MAG_MAX);
                 magSlider.value = magCut; magValue.value = magCut.toFixed(1);
